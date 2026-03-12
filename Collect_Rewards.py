@@ -41,11 +41,19 @@ def login_and_save(browser):
         auth_page = None
         for attempt in range(3):
             try:
-                with context.expect_page(timeout=20000) as new_page_info:
-                    # We use a real mouse click on the coordinates of the button 
-                    # as it's harder to detect than a JS .click()
-                    page.get_by_text("LOGIN WITH KABAM").click(force=True, delay=150)
-                auth_page = new_page_info.value
+                print("Attempting to trigger login...")
+
+page.get_by_text("LOGIN WITH KABAM").click(force=True)
+
+time.sleep(3)
+
+# Sometimes Kabam opens in same tab instead of popup
+pages = context.pages
+
+if len(pages) > 1:
+    auth_page = pages[-1]
+else:
+    auth_page = page
                 break
             except Exception as e:
                 print(f"Popup fail (Attempt {attempt + 1}): Retrying...")
@@ -134,3 +142,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
