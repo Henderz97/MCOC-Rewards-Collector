@@ -2,8 +2,8 @@ name: Collect Game Rewards
 
 on:
   schedule:
-    - cron: '0 6 * * *' # Runs at 06:00 UTC
-  workflow_dispatch: # Allows you to run it manually for testing
+    - cron: '0 6 * * *'
+  workflow_dispatch:
 
 jobs:
   run-script:
@@ -21,12 +21,12 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          # This installs the browser AND the Linux system libraries it needs
-          playwright install chromium --with-deps 
+          # The fix: update apt and then install with deps
+          sudo apt-get update
+          playwright install chromium --with-deps
 
       - name: Run script
         env:
-          # This maps your GitHub Secrets to the script's environment variables
           EMAIL: ${{ secrets.EMAIL }}
           PASSWORD: ${{ secrets.PASSWORD }}
         run: python Collect_Rewards.py
