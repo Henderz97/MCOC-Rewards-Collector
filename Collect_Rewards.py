@@ -95,10 +95,12 @@ def run():
 
         # Initial login if no session file exists
         if not os.path.exists(SESSION_FILE):
-            login_and_save(browser)
+    login_and_save(browser)
 
-        context = browser.new_context(storage_state=SESSION_FILE)
-        page = context.new_page()
+if os.path.exists(SESSION_FILE):
+    context = browser.new_context(storage_state=SESSION_FILE)
+else:
+    context = browser.new_context()
 
         try:
             page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle")
@@ -124,4 +126,5 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
