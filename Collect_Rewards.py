@@ -10,53 +10,48 @@ SESSION_FILE = "kabam_session.json"
 HEADLESS = True  # Set to True to run invisibly in the background or False
 # ---------------------
 
-def login_and_save(browser):
-    print("Starting login process...")
-    context = browser.new_context(viewport={'width': 1280, 'height': 720})
-    page = context.new_page()
+def run():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=HEADLESS,
+            args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
 
-    try:
-        page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle")
+        # Always login (GitHub runners are temporary)
+        login_and_save(browser)
 
-        # Accept cookies if present
+        if os.path.exists(SESSION_FILE):
+            context = browser.new_context(storage_state=SESSION_FILE)
+        else:
+            context = browser.new_context()
+
+        page = context.new_page()
+
         try:
-            page.get_by_role("button", name=re.compile("accept", re.I)).click(timeout=3000)
-        except:
-            pass
+            page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle")
 
-        # Click LOG IN in the top right
-        print("Clicking top-right LOG IN button...")
-        page.get_by_role("button", name=re.compile("log in", re.I)).click()
-        time.sleep(3) # Wait for animation
+            # Double-check if we are logged in
+            if page.get_by_role("button", name=re.compile("log in", re.I)).is_visible(timeout=5000):
+                print("Session expired. Performing fresh login...")
+                context.close()
 
-        # Trigger and catch the Kabam login popup
-        print("Waiting for Kabam login window...")
-        with context.expect_page() as new_page_info:
-            # We use a broader selector for the orange button to be safe
-            page.evaluate("() => document.querySelector('button[class*=\"orange\"], .modal-content button')?.click()")
-        
-        auth_page = new_page_info.value
-        auth_page.wait_for_load_state("networkidle")
+                if os.path.exists(SESSION_FILE):
+                    os.remove(SESSION_FILE)
 
-        # Fill credentials
-        print("Filling credentials...")
-        auth_page.fill('input[type="email"]', EMAIL)
-        auth_page.fill('input[type="password"]', PASSWORD)
+                login_and_save(browser)
 
-        # Use Enter to submit (Most reliable method found)
-        print("Submitting via Enter...")
-        auth_page.keyboard.press("Enter")
+                context = browser.new_context(storage_state=SESSION_FILE)
+                page = context.new_page()
+                page.goto("https://store.playcontestofchampions.com/")
 
-        # Wait for the main page to show 'CART' as proof of login
-        page.wait_for_selector("button:has-text('CART')", timeout=30000)
-        
-        # Save session for tomorrow
-        context.storage_state(path=SESSION_FILE)
-        print("Login successful. Session saved.")
-    except Exception as e:
-        print(f"Login failed: {e}")
-    finally:
-        context.close()
+            claim_rewards(page)
+
+        except Exception as e:
+            print(f"Runtime error: {e}")
+
+        finally:
+            print("Process complete.")
+            browser.close()
 
 def claim_rewards(page):
     print("Scanning for rewards...")
@@ -123,6 +118,7 @@ else:
 
 if __name__ == "__main__":
     run()
+
 
 
 
