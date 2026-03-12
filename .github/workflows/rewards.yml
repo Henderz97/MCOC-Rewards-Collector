@@ -2,13 +2,11 @@ name: Collect Game Rewards
 
 on:
   schedule:
-    # Runs at 06:00 UTC every day
     - cron: '0 6 * * *'
-  workflow_dispatch: # Allows you to run it manually for testing
+  workflow_dispatch:
 
 jobs:
   run-script:
-    # Using 22.04 for better compatibility with Playwright 1.42.0
     runs-on: ubuntu-22.04
 
     steps:
@@ -28,13 +26,13 @@ jobs:
 
       - name: Run script
         env:
-          # This maps the session data you captured locally to the script
-          KABAM_SESSION_JSON: ${{ secrets.KABAM_SESSION_JSON }}
+          EMAIL: ${{ secrets.EMAIL }}
+          PASSWORD: ${{ secrets.PASSWORD }}
         run: python Collect_Rewards.py
 
-      - name: Upload Error Screenshot
-        if: failure()
+      - name: Upload Debug Screenshot
+        if: always() # Uploads even if it fails so you can see the error
         uses: actions/upload-artifact@v4
         with:
-          name: error-debug
+          name: debug-screen
           path: error_screenshot.png
