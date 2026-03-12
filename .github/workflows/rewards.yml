@@ -2,12 +2,12 @@ name: Collect Game Rewards
 
 on:
   schedule:
-    - cron: '0 6 * * *'
-  workflow_dispatch:
+    - cron: '0 6 * * *' # Runs daily at 06:00 UTC
+  workflow_dispatch: # Allows manual trigger
 
 jobs:
   run-script:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -23,4 +23,7 @@ jobs:
           playwright install chromium --with-deps
 
       - name: Run script
+        env:
+          KABAM_EMAIL: ${{ secrets.KABAM_EMAIL }}
+          KABAM_PASSWORD: ${{ secrets.KABAM_PASSWORD }}
         run: python Collect_Rewards.py
