@@ -94,11 +94,8 @@ def run():
         browser = p.chromium.launch(headless=HEADLESS)
 
         # Initial login if no session file exists
-        if not os.path.exists(SESSION_FILE):
-    login_and_save(browser)
-
-if os.path.exists(SESSION_FILE):
-    context = browser.new_context(storage_state=SESSION_FILE)
+        login_and_save(browser)
+context = browser.new_context(storage_state=SESSION_FILE)
 else:
     context = browser.new_context()
 
@@ -126,5 +123,6 @@ else:
 
 if __name__ == "__main__":
     run()
+
 
 
