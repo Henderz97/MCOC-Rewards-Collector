@@ -4,8 +4,8 @@ import time
 from playwright.sync_api import sync_playwright
 
 # --- CONFIGURATION ---
-EMAIL = "zachhender@walla.co.il"
-PASSWORD = "23041997" # Ensure this is correct
+EMAIL = os.getenv("EMAIL")
+PASSWORD = os.getenv("PASSWORD") # Ensure this is correct
 SESSION_FILE = "kabam_session.json"
 HEADLESS = True  # Set to True to run invisibly in the background or False
 # ---------------------
@@ -124,3 +124,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
