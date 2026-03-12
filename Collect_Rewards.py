@@ -5,60 +5,55 @@ from playwright.sync_api import sync_playwright
 
 # --- CONFIGURATION ---
 EMAIL = os.getenv("EMAIL")
-PASSWORD = os.getenv("PASSWORD") # Ensure this is correct
+PASSWORD = os.getenv("PASSWORD") 
 SESSION_FILE = "kabam_session.json"
-HEADLESS = True  # Set to True to run invisibly in the background or False
+HEADLESS = True  
 # ---------------------
 
-def run():
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=HEADLESS,
-            args=["--no-sandbox", "--disable-dev-shm-usage"]
-        )
+def login_and_save(browser):
+    print("Starting login process...")
+    context = browser.new_context(viewport={'width': 1280, 'height': 720})
+    page = context.new_page()
 
-        # Always login (GitHub runners are temporary)
-        login_and_save(browser)
+    try:
+        page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle")
 
-        if os.path.exists(SESSION_FILE):
-            context = browser.new_context(storage_state=SESSION_FILE)
-        else:
-            context = browser.new_context()
-
-        page = context.new_page()
-
+        # 1. Clear Overlays
         try:
-            page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle")
+            page.get_by_role("button", name=re.compile("accept", re.I)).click(timeout=3000)
+        except:
+            pass
 
-            # Double-check if we are logged in
-            if page.get_by_role("button", name=re.compile("log in", re.I)).is_visible(timeout=5000):
-                print("Session expired. Performing fresh login...")
-                context.close()
+        # 2. Click Login
+        page.get_by_role("button", name=re.compile("log in", re.I)).click()
+        time.sleep(5) 
 
-                if os.path.exists(SESSION_FILE):
-                    os.remove(SESSION_FILE)
+        # 3. Handle Kabam Popup
+        with context.expect_page() as new_page_info:
+            page.evaluate("() => document.querySelector('button[class*=\"orange\"], .modal-content button')?.click()")
+        
+        auth_page = new_page_info.value
+        auth_page.wait_for_load_state("networkidle")
 
-                login_and_save(browser)
+        # 4. Fill & Enter
+        auth_page.fill('input[type="email"]', EMAIL)
+        auth_page.fill('input[type="password"]', PASSWORD)
+        auth_page.keyboard.press("Enter")
 
-                context = browser.new_context(storage_state=SESSION_FILE)
-                page = context.new_page()
-                page.goto("https://store.playcontestofchampions.com/")
-
-            claim_rewards(page)
-
-        except Exception as e:
-            print(f"Runtime error: {e}")
-
-        finally:
-            print("Process complete.")
-            browser.close()
+        # 5. Verify Redirect
+        page.wait_for_selector("button:has-text('CART')", timeout=30000)
+        context.storage_state(path=SESSION_FILE)
+        print("Login success. Session cached.")
+    except Exception as e:
+        print(f"Login failed: {e}")
+    finally:
+        context.close()
 
 def claim_rewards(page):
     print("Scanning for rewards...")
-    time.sleep(5) # Allow store items to load
+    time.sleep(8) # Extra time for GitHub's slower network
     
     claimed = 0
-    # Specifically target 'GET FREE' to avoid 'OWNED' items
     while claimed < 20:
         buttons = page.get_by_role("button", name=re.compile("get free", re.I))
         
@@ -70,14 +65,11 @@ def claim_rewards(page):
             btn = buttons.first
             btn.scroll_into_view_if_needed()
             btn.click(force=True)
-            
-            # Dismiss the success modal
-            time.sleep(4)
+            time.sleep(5)
             page.keyboard.press("Escape")
             time.sleep(2)
             claimed += 1
         except:
-            print("Action blocked, refreshing page...")
             page.reload()
             time.sleep(5)
             
@@ -85,40 +77,29 @@ def claim_rewards(page):
 
 def run():
     with sync_playwright() as p:
-        # Toggle HEADLESS here for background running
-        browser = p.chromium.launch(headless=HEADLESS)
+        browser = p.chromium.launch(
+            headless=HEADLESS,
+            args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
 
-        # Initial login if no session file exists
+        # On GitHub Actions, we always start fresh
         login_and_save(browser)
-context = browser.new_context(storage_state=SESSION_FILE)
-else:
-    context = browser.new_context()
 
-        try:
-            page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle")
-
-            # Double-check if we are logged in
-            if page.get_by_role("button", name=re.compile("log in", re.I)).is_visible(timeout=5000):
-                print("Session expired. Performing fresh login...")
+        if os.path.exists(SESSION_FILE):
+            context = browser.new_context(storage_state=SESSION_FILE)
+            page = context.new_page()
+            try:
+                page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle")
+                claim_rewards(page)
+            except Exception as e:
+                print(f"Runtime error: {e}")
+            finally:
                 context.close()
-                if os.path.exists(SESSION_FILE):
-                    os.remove(SESSION_FILE)
-                login_and_save(browser)
-                # Re-open with new session
-                context = browser.new_context(storage_state=SESSION_FILE)
-                page = context.new_page()
-                page.goto("https://store.playcontestofchampions.com/")
+        else:
+            print("Failed to create session file. Cannot proceed.")
 
-            claim_rewards(page)
-        except Exception as e:
-            print(f"Runtime error: {e}")
-        finally:
-            print("Process complete.")
-            browser.close()
+        browser.close()
+        print("Process complete.")
 
 if __name__ == "__main__":
     run()
-
-
-
-
