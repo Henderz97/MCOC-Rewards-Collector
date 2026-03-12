@@ -1,64 +1,126 @@
 import os
-import json
+import re
 import time
-import requests
+from playwright.sync_api import sync_playwright
 
+# --- CONFIGURATION ---
+EMAIL = "zachhender@walla.co.il"
+PASSWORD = "23041997" # Ensure this is correct
 SESSION_FILE = "kabam_session.json"
+HEADLESS = False  # Set to True to run invisibly in the background or False
+# ---------------------
 
-def claim_via_api(access_token):
-    print("Session valid. Fetching rewards list via API...")
-    
-    # The API headers usually require the Bearer token we got from the cookie
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-        "Origin": "https://store.playcontestofchampions.com",
-        "Referer": "https://store.playcontestofchampions.com/"
-    }
+def login_and_save(browser):
+    print("Starting login process...")
+    context = browser.new_context(viewport={'width': 1280, 'height': 720})
+    page = context.new_page()
 
-    # Endpoint to get the manifest of items (This is an example path)
-    # Note: You can find the exact 'claim' URL in your Browser Network Tab (F12)
-    # when you click a button manually.
-    store_url = "https://api.playcontestofchampions.com/v1/store/items" 
-    
     try:
-        # 1. Get items
-        # 2. Loop and POST to the claim endpoint
-        # For simplicity in this 'Simple' version, we stay with the Playwright 
-        # logic but use the session you uploaded.
-        pass
+        page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle")
 
-if __name__ == "__main__":
-    # If we want the absolute simplest path that WORKED before:
-    # Use the session file you uploaded to bypass the Auth API entirely.
-    from playwright.sync_api import sync_playwright
+        # Accept cookies if present
+        try:
+            page.get_by_role("button", name=re.compile("accept", re.I)).click(timeout=3000)
+        except:
+            pass
 
+        # Click LOG IN in the top right
+        print("Clicking top-right LOG IN button...")
+        page.get_by_role("button", name=re.compile("log in", re.I)).click()
+        time.sleep(3) # Wait for animation
+
+        # Trigger and catch the Kabam login popup
+        print("Waiting for Kabam login window...")
+        with context.expect_page() as new_page_info:
+            # We use a broader selector for the orange button to be safe
+            page.evaluate("() => document.querySelector('button[class*=\"orange\"], .modal-content button')?.click()")
+        
+        auth_page = new_page_info.value
+        auth_page.wait_for_load_state("networkidle")
+
+        # Fill credentials
+        print("Filling credentials...")
+        auth_page.fill('input[type="email"]', EMAIL)
+        auth_page.fill('input[type="password"]', PASSWORD)
+
+        # Use Enter to submit (Most reliable method found)
+        print("Submitting via Enter...")
+        auth_page.keyboard.press("Enter")
+
+        # Wait for the main page to show 'CART' as proof of login
+        page.wait_for_selector("button:has-text('CART')", timeout=30000)
+        
+        # Save session for tomorrow
+        context.storage_state(path=SESSION_FILE)
+        print("Login successful. Session saved.")
+    except Exception as e:
+        print(f"Login failed: {e}")
+    finally:
+        context.close()
+
+def claim_rewards(page):
+    print("Scanning for rewards...")
+    time.sleep(5) # Allow store items to load
+    
+    claimed = 0
+    # Specifically target 'GET FREE' to avoid 'OWNED' items
+    while claimed < 20:
+        buttons = page.get_by_role("button", name=re.compile("get free", re.I))
+        
+        if buttons.count() == 0:
+            break
+
+        print(f"Claiming reward #{claimed + 1}...")
+        try:
+            btn = buttons.first
+            btn.scroll_into_view_if_needed()
+            btn.click(force=True)
+            
+            # Dismiss the success modal
+            time.sleep(4)
+            page.keyboard.press("Escape")
+            time.sleep(2)
+            claimed += 1
+        except:
+            print("Action blocked, refreshing page...")
+            page.reload()
+            time.sleep(5)
+            
+    print(f"Finished! Total items claimed: {claimed}")
+
+def run():
     with sync_playwright() as p:
-        if not os.path.exists(SESSION_FILE):
-            print("Missing kabam_session.json! Upload it to your repo.")
-            exit()
+        # Toggle HEADLESS here for background running
+        browser = p.chromium.launch(headless=HEADLESS)
 
-        browser = p.chromium.launch(headless=True)
+        # Initial login if no session file exists
+        if not os.path.exists(SESSION_FILE):
+            login_and_save(browser)
+
         context = browser.new_context(storage_state=SESSION_FILE)
         page = context.new_page()
-        
-        print("Opening store...")
-        page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle")
-        
-        # Check if login is needed
-        if "LOG IN" in page.content().upper():
-            print("Session expired. Please re-upload kabam_session.json")
-        else:
-            print("Logged in! Claiming...")
-            # Simple button-clicker loop
-            for i in range(15):
-                btn = page.get_by_role("button", name="GET FREE").first
-                if btn.is_visible():
-                    btn.click(force=True)
-                    print(f"Claimed item {i+1}")
-                    time.sleep(4)
-                    page.keyboard.press("Escape")
-                    time.sleep(2)
-                else:
-                    break
-        browser.close()
+
+        try:
+            page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle")
+
+            # Double-check if we are logged in
+            if page.get_by_role("button", name=re.compile("log in", re.I)).is_visible(timeout=5000):
+                print("Session expired. Performing fresh login...")
+                context.close()
+                if os.path.exists(SESSION_FILE):
+                    os.remove(SESSION_FILE)
+                login_and_save(browser)
+                # Re-open with new session
+                context = browser.new_context(storage_state=SESSION_FILE)
+                page = context.new_page()
+                page.goto("https://store.playcontestofchampions.com/")
+
+            claim_rewards(page)
+        except Exception as e:
+            print(f"Runtime error: {e}")
+        finally:
+            print("Process complete.")
+            browser.close()
+
+if __name__ == "__main__":
+    run()
