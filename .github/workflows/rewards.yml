@@ -2,12 +2,13 @@ name: Collect Game Rewards
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '0 5 * * *'   # Runs every day at 08:00 Israel time (UTC+3)
   workflow_dispatch:
 
 jobs:
   run-script:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
