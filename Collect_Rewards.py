@@ -32,6 +32,7 @@ def login_and_save(browser):
 
         time.sleep(5)
 
+        # Accept cookies if present
         try:
             page.get_by_role("button", name=re.compile("accept", re.I)).click(timeout=4000)
         except:
@@ -40,15 +41,23 @@ def login_and_save(browser):
         print("Opening login modal...")
         page.get_by_role("button", name=re.compile("log in", re.I)).click()
 
-        time.sleep(4)
+        print("Waiting for Kabam login button...")
+
+        kabam_btn = page.locator("button").filter(
+            has_text=re.compile("kabam", re.I)
+        )
+
+        kabam_btn.first.wait_for(timeout=60000)
 
         print("Clicking LOGIN WITH KABAM...")
-        page.get_by_text("LOGIN WITH KABAM").click(force=True)
+
+        kabam_btn.first.click(force=True)
 
         time.sleep(4)
 
-        # Detect if popup opened
+        # detect popup or same-tab login
         pages = context.pages
+
         if len(pages) > 1:
             auth_page = pages[-1]
         else:
@@ -56,7 +65,7 @@ def login_and_save(browser):
 
         print("Submitting credentials...")
 
-        auth_page.wait_for_selector('input[type="email"]', timeout=30000)
+        auth_page.wait_for_selector('input[type="email"]', timeout=60000)
 
         auth_page.fill('input[type="email"]', EMAIL)
         auth_page.fill('input[type="password"]', PASSWORD)
@@ -82,6 +91,7 @@ def login_and_save(browser):
 
 
 def claim_rewards(page):
+
     print("Scanning for free rewards...")
 
     time.sleep(8)
@@ -89,6 +99,7 @@ def claim_rewards(page):
     claimed = 0
 
     while claimed < 20:
+
         buttons = page.locator("button").filter(
             has_text=re.compile("GET FREE", re.I)
         )
@@ -103,6 +114,7 @@ def claim_rewards(page):
             print(f"Claiming reward #{claimed + 1}")
 
             target.scroll_into_view_if_needed()
+
             target.click(force=True)
 
             time.sleep(5)
@@ -114,6 +126,7 @@ def claim_rewards(page):
             claimed += 1
 
         except:
+
             print("Action blocked, refreshing...")
 
             page.reload()
@@ -124,6 +137,7 @@ def claim_rewards(page):
 
 
 def run():
+
     with sync_playwright() as p:
 
         browser = p.chromium.launch(
@@ -142,6 +156,7 @@ def run():
             page = context.new_page()
 
             try:
+
                 page.goto(
                     "https://store.playcontestofchampions.com/",
                     wait_until="networkidle"
@@ -150,12 +165,15 @@ def run():
                 claim_rewards(page)
 
             except Exception as e:
+
                 print(f"Claim error: {e}")
 
             finally:
+
                 context.close()
 
         else:
+
             print("Login failed, stopping script")
 
         browser.close()
