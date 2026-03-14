@@ -8,29 +8,29 @@ EMAIL = os.getenv("KABAM_EMAIL")
 PASSWORD = os.getenv("KABAM_PASSWORD")
 SESSION_FILE = "kabam_session.json"
 HEADLESS = True 
-# ---------------------
 
 def login_and_save(browser):
     print("Starting login process...")
-    context = browser.new_context(viewport={'width': 1280, 'height': 720})
+    # Using a real user agent helps bypass some bot detection
+    context = browser.new_context(
+        viewport={'width': 1280, 'height': 720},
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
     page = context.new_page()
 
     try:
-        page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle")
+        page.goto("https://store.playcontestofchampions.com/", wait_until="domcontentloaded")
 
-        # Accept cookies
+        # Handle Cookie Consent
         try:
-            page.get_by_role("button", name=re.compile("accept", re.I)).click(timeout=5000)
+            page.get_by_role("button", name=re.compile("accept|agree|allow", re.I)).click(timeout=5000)
         except:
             pass
 
-        print("Clicking top-right LOG IN button...")
-        page.get_by_role("button", name=re.compile("log in", re.I)).click()
-        page.wait_for_timeout(3000) 
-
-        print("Waiting for Kabam login window...")
+        print("Opening Login...")
+        # Trigger the popup
         with context.expect_page() as new_page_info:
-            page.locator("button:has-text('Log In')").last.click()
+            page.get_by_role("button", name=re.compile("log in", re.I)).first.click()
         
         auth_page = new_page_info.value
         auth_page.wait_for_load_state("networkidle")
@@ -38,18 +38,13 @@ def login_and_save(browser):
         print("Filling credentials...")
         auth_page.fill('input[type="email"]', EMAIL)
         auth_page.fill('input[type="password"]', PASSWORD)
-        auth_page.keyboard.press("Enter")
+        auth_page.get_by_role("button", name=re.compile("log in", re.I)).click()
 
-        # Wait for redirect back
-        page.wait_for_selector("button:has-text('CART')", timeout=45000)
+        # Wait for the popup to close and redirect to finish
+        page.wait_for_selector("text=LOG OUT", timeout=60000)
         
         context.storage_state(path=SESSION_FILE)
         print("Login successful. Session saved.")
-    except Exception as e:
-        print(f"Login failed: {e}")
-        page.screenshot(path="login_error.png")
-        print("Screenshot saved as login_error.png")
-        raise e
     finally:
         context.close()
 
@@ -58,50 +53,58 @@ def claim_rewards(page):
     page.wait_for_timeout(5000)
     
     claimed = 0
-    while claimed < 20:
-        buttons = page.get_by_role("button", name=re.compile("get free|claim", re.I))
+    # The store often requires a few seconds to load the 'Free' tags
+    for _ in range(5): 
+        # Target buttons that specifically say 'Claim' or 'Free'
+        buttons = page.get_by_role("button", name=re.compile("Get Free|Claim", re.I))
+        count = buttons.count()
         
-        if buttons.count() == 0:
-            print("No more free rewards found.")
+        if count == 0:
             break
 
-        print(f"Claiming reward #{claimed + 1}...")
-        try:
-            btn = buttons.first
-            btn.scroll_into_view_if_needed()
-            btn.click(force=True)
-            page.wait_for_timeout(4000)
-            page.keyboard.press("Escape")
-            page.wait_for_timeout(2000)
-            claimed += 1
-        except Exception as e:
-            print(f"Error claiming item: {e}. Taking screenshot and refreshing...")
-            page.screenshot(path=f"claim_error_{claimed}.png")
-            page.reload()
-            page.wait_for_timeout(5000)
-            
+        for i in range(count):
+            try:
+                print(f"Attempting to claim item {claimed + 1}...")
+                buttons.nth(i).click()
+                page.wait_for_timeout(3000)
+                # Close the 'Success' modal
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(1000)
+                claimed += 1
+            except:
+                continue
+        
+        page.reload() # Refresh to see if new tiers unlocked
+        page.wait_for_timeout(3000)
+
     print(f"Finished! Total items claimed: {claimed}")
 
 def run():
     if not EMAIL or not PASSWORD:
-        print("Error: KABAM_EMAIL or KABAM_PASSWORD not set.")
+        print("Error: KABAM_EMAIL or KABAM_PASSWORD secrets are missing.")
         return
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=HEADLESS)
         
+        # Check if session exists
         if not os.path.exists(SESSION_FILE):
             login_and_save(browser)
 
-        context = browser.new_context(storage_state=SESSION_FILE)
+        context = browser.new_context(
+            storage_state=SESSION_FILE,
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
         page = context.new_page()
 
         try:
-            page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle")
-
+            page.goto("https://store.playcontestofchampions.com/")
+            
+            # Verify if still logged in
             if page.get_by_role("button", name=re.compile("log in", re.I)).is_visible():
-                print("Session expired. Re-logging...")
+                print("Session expired. Re-authenticating...")
                 login_and_save(browser)
+                # Reload with new state
                 context = browser.new_context(storage_state=SESSION_FILE)
                 page = context.new_page()
                 page.goto("https://store.playcontestofchampions.com/")
@@ -109,9 +112,8 @@ def run():
             claim_rewards(page)
         except Exception as e:
             print(f"Runtime error: {e}")
-            page.screenshot(path="runtime_error.png")
+            page.screenshot(path="error.png")
         finally:
-            print("Process complete.")
             browser.close()
 
 if __name__ == "__main__":
