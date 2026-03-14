@@ -1,11 +1,42 @@
+name: Collect Game Rewards
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12' # Pinning to 3.12 is more stable in 2026 runners
+          cache: 'pip' # Built-in caching for faster runs
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright
+          # Standard install for 2026 environments
+          python -m playwright install chromium --with-deps
+
       - name: Restore Session Cache
         uses: actions/cache@v3
         with:
           path: kabam_session.json
-          key: ${{ runner.os }}-kabam-session
+          key: ${{ runner.os }}-kabam-session-${{ hashFiles('Collect_Rewards.py') }}
+          restore-keys: |
+            ${{ runner.os }}-kabam-session-
 
       - name: Run script
         env:
           KABAM_EMAIL: ${{ secrets.KABAM_EMAIL }}
           KABAM_PASSWORD: ${{ secrets.KABAM_PASSWORD }}
+          # Headless is required for GitHub Actions
+          PYTHONUNBUFFERED: 1 
         run: python Collect_Rewards.py
