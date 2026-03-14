@@ -3,8 +3,8 @@ import time
 from playwright.sync_api import sync_playwright, TimeoutError
 
 # --- CONFIGURATION ---
-EMAIL = os.getenv("EMAIL") or "your_email_here"
-PASSWORD = os.getenv("PASSWORD") or "your_password_here"
+EMAIL = os.getenv("EMAIL") or "zachhender@walla.co.il"
+PASSWORD = os.getenv("PASSWORD") or "23041997"
 SESSION_FILE = "kabam_session.json"
 HEADLESS = True
 # ---------------------
@@ -14,15 +14,15 @@ def login_and_save(browser):
     print("Starting login process...")
 
     try:
-        page.goto("https://store.playcontestofchampions.com/", wait_until="domcontentloaded", timeout=60000)
+        page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle", timeout=60000)
 
-        # Try clicking the login button
+        # Click main login button
         page.locator("text=Log in").first.click()
         time.sleep(1)
 
         popup = None
         try:
-            # Wait briefly to see if a popup opens
+            # Check if a popup opens
             popup = page.wait_for_event("popup", timeout=5000)
             print("Popup detected.")
         except TimeoutError:
@@ -30,29 +30,41 @@ def login_and_save(browser):
 
         login_page = popup if popup else page
 
-        # Fill in credentials
-        login_page.fill('input[type="email"]', EMAIL)
-        login_page.fill('input[type="password"]', PASSWORD)
-        login_page.click('button:has-text("Login")')
-        time.sleep(2)
-
-        # Optional "Stay logged in?" dialog
+        # Wait for email input (main page or iframe)
         try:
-            login_page.locator('button:has-text("Yes")').click(timeout=2000)
-        except:
-            pass
+            # Handle iframe login if present
+            frame = None
+            iframes = login_page.frames
+            for f in iframes:
+                if f.url.startswith("https://accounts.kabam.com"):  # login iframe URL
+                    frame = f
+                    break
 
-        # Save session
-        context = login_page.context
-        context.storage_state(path=SESSION_FILE)
-        print("Login successful. Session saved.")
+            target = frame or login_page
+            target.wait_for_selector('input[type="email"]', timeout=20000)
+            target.fill('input[type="email"]', EMAIL)
+            target.fill('input[type="password"]', PASSWORD)
+            target.click('button:has-text("Login")')
+            time.sleep(2)
+
+            # Optional: handle "Stay logged in?" dialog
+            try:
+                target.locator('button:has-text("Yes")').click(timeout=2000)
+            except:
+                pass
+
+            # Save session
+            login_page.context.storage_state(path=SESSION_FILE)
+            print("Login successful. Session saved.")
+
+        except TimeoutError:
+            print("Email/password fields did not load in time.")
+            raise
 
         if popup:
             popup.close()
         page.close()
-    except TimeoutError:
-        print("Login failed: Timeout while loading page or login fields.")
-        raise
+
     except Exception as e:
         print(f"Login failed: {e}")
         raise
@@ -73,11 +85,11 @@ def run():
 
         # Go to main store page
         try:
-            page.goto("https://store.playcontestofchampions.com/", wait_until="domcontentloaded", timeout=60000)
+            page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle", timeout=60000)
         except TimeoutError:
             print("Main page load timed out, proceeding anyway.")
 
-        # Example: collect rewards placeholder
+        # Example: collect rewards
         print("Scanning for rewards...")
         # Example reward collection:
         # for btn in page.locator("button:has-text('Collect')").all():
