@@ -2,48 +2,34 @@ name: Collect Game Rewards
 
 on:
   schedule:
-    - cron: '0 5 * * *'
+    - cron: '0 6 * * *'  # Runs daily at 6:00 UTC
   workflow_dispatch:
 
 jobs:
   run-script:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install playwright
-          # xvfb is the magic trick for "headless" popups
-          sudo apt-get install xvfb
-          python -m playwright install chromium --with-deps
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          sudo apt-get update
+          sudo apt-get install -y xvfb libnss3 fonts-liberation libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 libfontconfig1 \
+          libx11-6 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxrandr2 libgbm1 libasound2 libpangocairo-1.0-0 libpango-1.0-0 \
+          fonts-noto-color-emoji
+          playwright install chromium --with-deps
 
-      - name: Restore Session Cache
-        uses: actions/cache@v4
-        with:
-          path: kabam_session.json
-          key: ${{ runner.os }}-kabam-session-${{ github.run_id }}
-          restore-keys: |
-            ${{ runner.os }}-kabam-session-
-
-      - name: Run script with Virtual Display
+      - name: Run Python script
         env:
-          KABAM_EMAIL: ${{ secrets.KABAM_EMAIL }}
-          KABAM_PASSWORD: ${{ secrets.KABAM_PASSWORD }}
-          PYTHONUNBUFFERED: 1
-        # xvfb-run makes the browser think it has a real screen
+          EMAIL: ${{ secrets.EMAIL }}
+          PASSWORD: ${{ secrets.PASSWORD }}
         run: xvfb-run --auto-servernum python Collect_Rewards.py
-
-      - name: Upload Debug Screenshots
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-screenshots
-          path: "*.png"
