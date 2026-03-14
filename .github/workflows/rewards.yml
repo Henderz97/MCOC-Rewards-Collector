@@ -5,9 +5,6 @@ on:
     - cron: '0 6 * * *'
   workflow_dispatch:
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   run-script:
     runs-on: ubuntu-latest
@@ -24,23 +21,25 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install playwright
+          # xvfb is the magic trick for "headless" popups
+          sudo apt-get install xvfb
           python -m playwright install chromium --with-deps
 
       - name: Restore Session Cache
         uses: actions/cache@v4
         with:
           path: kabam_session.json
-          # Using run_attempt ensures that if you re-run a failed job, it tries fresh
-          key: ${{ runner.os }}-kabam-session-${{ github.run_id }}-${{ github.run_attempt }}
+          key: ${{ runner.os }}-kabam-session-${{ github.run_id }}
           restore-keys: |
             ${{ runner.os }}-kabam-session-
 
-      - name: Run script
+      - name: Run script with Virtual Display
         env:
           KABAM_EMAIL: ${{ secrets.KABAM_EMAIL }}
           KABAM_PASSWORD: ${{ secrets.KABAM_PASSWORD }}
           PYTHONUNBUFFERED: 1
-        run: python Collect_Rewards.py
+        # xvfb-run makes the browser think it has a real screen
+        run: xvfb-run --auto-servernum python Collect_Rewards.py
 
       - name: Upload Debug Screenshots
         if: failure()
