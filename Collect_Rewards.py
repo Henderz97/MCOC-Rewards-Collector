@@ -6,45 +6,52 @@ from playwright.sync_api import sync_playwright, TimeoutError
 EMAIL = os.getenv("EMAIL") or "your_email_here"
 PASSWORD = os.getenv("PASSWORD") or "your_password_here"
 SESSION_FILE = "kabam_session.json"
-HEADLESS = True  # Set False if you want to see browser
+HEADLESS = True
 # ---------------------
 
 def login_and_save(browser):
     page = browser.new_page()
+    print("Starting login process...")
+
     try:
-        print("Starting login process...")
-        # Use domcontentloaded to avoid networkidle timeout
         page.goto("https://store.playcontestofchampions.com/", wait_until="domcontentloaded", timeout=60000)
 
-        # Click the initial login button
+        # Try clicking the login button
         page.locator("text=Log in").first.click()
         time.sleep(1)
 
-        # Wait for Kabam login popup
-        popup = page.wait_for_event("popup", timeout=10000)
-        print("Kabam login popup detected...")
+        popup = None
+        try:
+            # Wait briefly to see if a popup opens
+            popup = page.wait_for_event("popup", timeout=5000)
+            print("Popup detected.")
+        except TimeoutError:
+            print("No popup opened, using main page for login.")
 
-        # Fill credentials in popup
-        popup.fill('input[type="email"]', EMAIL)
-        popup.fill('input[type="password"]', PASSWORD)
-        popup.click('button:has-text("Login")')
+        login_page = popup if popup else page
+
+        # Fill in credentials
+        login_page.fill('input[type="email"]', EMAIL)
+        login_page.fill('input[type="password"]', PASSWORD)
+        login_page.click('button:has-text("Login")')
         time.sleep(2)
 
-        # Optional: handle "Stay logged in?" or other dialogs
+        # Optional "Stay logged in?" dialog
         try:
-            popup.locator('button:has-text("Yes")').click(timeout=2000)
+            login_page.locator('button:has-text("Yes")').click(timeout=2000)
         except:
             pass
 
-        # Save session cookies
-        context = popup.context
+        # Save session
+        context = login_page.context
         context.storage_state(path=SESSION_FILE)
         print("Login successful. Session saved.")
 
-        popup.close()
+        if popup:
+            popup.close()
         page.close()
     except TimeoutError:
-        print("Login failed: Timeout while loading page or popup.")
+        print("Login failed: Timeout while loading page or login fields.")
         raise
     except Exception as e:
         print(f"Login failed: {e}")
@@ -70,10 +77,9 @@ def run():
         except TimeoutError:
             print("Main page load timed out, proceeding anyway.")
 
-        # Example: collect rewards logic placeholder
+        # Example: collect rewards placeholder
         print("Scanning for rewards...")
-        # Here you would add the code to find reward buttons and click them
-        # For example:
+        # Example reward collection:
         # for btn in page.locator("button:has-text('Collect')").all():
         #     btn.click()
         #     time.sleep(0.5)
