@@ -3,128 +3,118 @@ import re
 import time
 from playwright.sync_api import sync_playwright
 
-# --- CONFIGURATION ---
+# --- CONFIGURATION (Now using Environment Variables for Security) ---
 EMAIL = os.getenv("KABAM_EMAIL")
 PASSWORD = os.getenv("KABAM_PASSWORD")
 SESSION_FILE = "kabam_session.json"
-# We keep this True in code, but the Workflow will handle the "Display"
-HEADLESS = True 
+HEADLESS = True  # Must be True for GitHub Actions
+# --------------------------------------------------------------------
 
 def login_and_save(browser):
     print("Starting login process...")
-    # Masking the automation footprint
-    context = browser.new_context(
-        viewport={'width': 1920, 'height': 1080},
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        has_touch=True,
-        java_script_enabled=True
-    )
+    context = browser.new_context(viewport={'width': 1280, 'height': 720})
     page = context.new_page()
 
     try:
-        print("Navigating to store...")
-        page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle", timeout=90000)
+        page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle")
 
-        # Handle Cookie Banner quickly
+        # Accept cookies if present
         try:
-            page.get_by_role("button", name=re.compile("accept|agree|allow|ok", re.I)).click(timeout=10000)
+            page.get_by_role("button", name=re.compile("accept", re.I)).click(timeout=5000)
         except:
             pass
 
-        print("Locating Login button...")
-        # Sometimes the button is inside an iframe or needs a moment to be 'stable'
-        login_btn = page.get_by_role("button", name=re.compile("log in", re.I)).first
-        login_btn.wait_for(state="visible", timeout=30000)
+        # Click LOG IN in the top right
+        print("Clicking top-right LOG IN button...")
+        page.get_by_role("button", name=re.compile("log in", re.I)).click()
+        time.sleep(3) 
 
-        print("Opening Login Popup...")
-        # We'll try to click and wait for the page simultaneously
-        with context.expect_page(timeout=90000) as new_page_info:
-            login_btn.click(delay=150) # Small delay to simulate human click
+        # Trigger and catch the Kabam login popup
+        print("Waiting for Kabam login window...")
+        with context.expect_page() as new_page_info:
+            # More robust selector for the login trigger
+            page.locator("button:has-text('Log In')").last.click()
         
         auth_page = new_page_info.value
         auth_page.wait_for_load_state("networkidle")
 
+        # Fill credentials
         print("Filling credentials...")
-        # Using exact selectors for the Kabam auth page
-        auth_page.get_by_label("Email").fill(EMAIL)
-        auth_page.get_by_label("Password").fill(PASSWORD)
-        auth_page.get_by_role("button", name=re.compile("log in", re.I)).click()
+        auth_page.fill('input[type="email"]', EMAIL)
+        auth_page.fill('input[type="password"]', PASSWORD)
 
-        # Wait for the main page to show "LOG OUT" (meaning login succeeded)
-        print("Verifying successful login...")
-        page.wait_for_selector("button:has-text('LOG OUT')", timeout=90000)
+        # Submit
+        print("Submitting...")
+        auth_page.keyboard.press("Enter")
+
+        # Wait for redirect back and check for login success (Cart or Logout button)
+        page.wait_for_selector("button:has-text('CART')", timeout=45000)
         
+        # Save session
         context.storage_state(path=SESSION_FILE)
         print("Login successful. Session saved.")
     except Exception as e:
-        page.screenshot(path="login_debug.png")
-        if 'auth_page' in locals():
-             auth_page.screenshot(path="auth_debug.png")
         print(f"Login failed: {e}")
-        raise e
+        raise e # Re-raise to stop the script if login fails
     finally:
         context.close()
 
 def claim_rewards(page):
     print("Scanning for rewards...")
-    page.wait_for_timeout(5000)
+    page.wait_for_timeout(5000) # Give items time to render
     
     claimed = 0
-    # The store is very dynamic; we refresh to ensure we catch everything
-    for attempt in range(2):
-        print(f"Claim attempt pass {attempt + 1}...")
-        # Look for 'FREE' or 'CLAIM' buttons
-        buttons = page.locator("button").filter(has_text=re.compile(r"Free|Claim", re.I))
+    # Search for "GET" or "FREE" buttons
+    while claimed < 20:
+        # Looking for the 'FREE' buttons specifically in the store grid
+        buttons = page.get_by_role("button", name=re.compile("get free|claim", re.I))
         
-        count = buttons.count()
-        if count == 0:
-            print("No rewards visible.")
+        if buttons.count() == 0:
+            print("No more free rewards found.")
             break
 
-        for i in range(count):
-            try:
-                target = buttons.nth(i)
-                if target.is_visible():
-                    print(f"Clicking reward {claimed + 1}...")
-                    target.click(timeout=10000)
-                    page.wait_for_timeout(3000)
-                    page.keyboard.press("Escape") # Clear the 'Success' popup
-                    claimed += 1
-            except:
-                continue
-        
-        page.reload(wait_until="networkidle")
-        page.wait_for_timeout(5000)
+        print(f"Claiming reward #{claimed + 1}...")
+        try:
+            btn = buttons.first
+            btn.scroll_into_view_if_needed()
+            btn.click(force=True)
             
-    print(f"Process ended. Total items claimed: {claimed}")
+            # Wait for success modal and dismiss
+            page.wait_for_timeout(4000)
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(2000)
+            claimed += 1
+        except Exception as e:
+            print(f"Error claiming item: {e}. Refreshing...")
+            page.reload()
+            page.wait_for_timeout(5000)
+            
+    print(f"Finished! Total items claimed: {claimed}")
 
 def run():
     if not EMAIL or not PASSWORD:
-        print("Error: KABAM_EMAIL or KABAM_PASSWORD environment variables are missing.")
+        print("Error: KABAM_EMAIL or KABAM_PASSWORD not set in environment.")
         return
 
     with sync_playwright() as p:
-        # Launching with extra args to dodge detection
-        browser = p.chromium.launch(
-            headless=HEADLESS,
-            args=["--disable-blink-features=AutomationControlled"]
-        )
-        
+        browser = p.chromium.launch(headless=HEADLESS)
+
+        # In GitHub Actions, we usually login fresh every time 
+        # unless you use Artifacts to store the JSON file.
         if not os.path.exists(SESSION_FILE):
             login_and_save(browser)
 
-        # Apply the session
         context = browser.new_context(storage_state=SESSION_FILE)
         page = context.new_page()
 
         try:
             page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle")
 
-            # Check if we are still logged in
+            # Verify if still logged in
             if page.get_by_role("button", name=re.compile("log in", re.I)).is_visible():
-                print("Session expired or invalid. Attempting re-login...")
+                print("Session expired or invalid. Re-logging...")
                 login_and_save(browser)
-                # Reload with new session
+                # Refresh page with new session
                 context = browser.new_context(storage_state=SESSION_FILE)
                 page = context.new_page()
                 page.goto("https://store.playcontestofchampions.com/")
@@ -132,8 +122,8 @@ def run():
             claim_rewards(page)
         except Exception as e:
             print(f"Runtime error: {e}")
-            page.screenshot(path="runtime_error.png")
         finally:
+            print("Process complete.")
             browser.close()
 
 if __name__ == "__main__":
