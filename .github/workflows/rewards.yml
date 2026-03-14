@@ -2,15 +2,19 @@ name: Collect Game Rewards
 
 on:
   schedule:
-    - cron: '0 5 * * *'   # Runs every day at 08:00 Israel time (UTC+3)
+    - cron: '0 5 * * *'   # 05:00 UTC (07:00 Israel winter / 08:00 summer)
   workflow_dispatch:
 
 jobs:
   run-script:
+
     runs-on: ubuntu-latest
 
+    timeout-minutes: 15
+
     steps:
-      - name: Checkout repo
+
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -20,16 +24,17 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install playwright
-          playwright install chromium --with-deps
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
 
-      - name: Run script
+      - name: Run reward collector
         env:
           KABAM_EMAIL: ${{ secrets.KABAM_EMAIL }}
           KABAM_PASSWORD: ${{ secrets.KABAM_PASSWORD }}
         run: python Collect_Rewards.py
 
-      - name: Upload Screenshots (if failed)
+      - name: Upload Debug Screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
