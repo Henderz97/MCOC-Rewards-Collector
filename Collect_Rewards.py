@@ -1,15 +1,14 @@
 import os
-import re
 from playwright.sync_api import sync_playwright
 
-# --- CONFIGURATION ---
 EMAIL = os.getenv("KABAM_EMAIL")
 PASSWORD = os.getenv("KABAM_PASSWORD")
-SESSION_FILE = "kabam_session.json"
-HEADLESS = True
-# ---------------------
 
+SESSION_FILE = "kabam_session.json"
 STORE_URL = "https://store.playcontestofchampions.com/"
+
+HEADLESS = True
+
 
 def login_and_save(browser):
 
@@ -23,7 +22,7 @@ def login_and_save(browser):
         print("Opening store page...")
         page.goto(STORE_URL, wait_until="domcontentloaded", timeout=60000)
 
-        # Accept cookies
+        # cookies
         try:
             print("Accepting cookies...")
             page.locator("text=ACCEPT ALL").click(timeout=5000)
@@ -33,21 +32,21 @@ def login_and_save(browser):
         print("Clicking LOG IN...")
         page.locator("text=LOG IN").first.click()
 
-        print("Waiting for login modal...")
+        print("Waiting for modal...")
         page.wait_for_timeout(4000)
 
-        print("Locating Kabam button...")
-
-        login_button = page.locator("button:has-text('KABAM'), a:has-text('KABAM')").first
-
-        login_button.wait_for(timeout=30000)
-
-        print("Opening Kabam login window...")
+        print("Clicking LOGIN WITH KABAM via JS...")
 
         with context.expect_page() as new_page_info:
-            login_button.click(force=True)
+
+            page.evaluate("""
+            const btn = [...document.querySelectorAll("button,a")]
+              .find(el => el.innerText && el.innerText.includes("KABAM"));
+            if(btn){btn.click();}
+            """)
 
         auth_page = new_page_info.value
+
         auth_page.wait_for_load_state("domcontentloaded")
 
         print("Entering credentials...")
@@ -68,10 +67,13 @@ def login_and_save(browser):
     except Exception as e:
 
         print(f"Login failed: {e}")
+
         page.screenshot(path="login_error.png")
+
         raise e
 
     finally:
+
         context.close()
 
 
@@ -79,11 +81,8 @@ def claim_rewards(page):
 
     print("Scanning for rewards...")
 
-    page.evaluate("window.scrollTo(0, document.body.scrollHeight/2)")
-    page.wait_for_timeout(2000)
-
     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-    page.wait_for_timeout(5000)
+    page.wait_for_timeout(4000)
 
     page.screenshot(path="store_view.png")
 
@@ -97,11 +96,10 @@ def claim_rewards(page):
             print("No claimable rewards found.")
             break
 
-        print(f"Attempting to claim reward #{claimed+1}")
-
         try:
 
             btn = buttons.first
+
             btn.scroll_into_view_if_needed()
 
             page.wait_for_timeout(1000)
@@ -112,15 +110,16 @@ def claim_rewards(page):
 
             page.keyboard.press("Escape")
 
-            page.wait_for_timeout(2000)
-
             claimed += 1
 
-        except Exception as e:
+            print(f"Claimed reward #{claimed}")
 
-            print(f"Claim failed: {e}, refreshing...")
+        except Exception:
+
+            print("Retrying after refresh...")
 
             page.reload(wait_until="domcontentloaded")
+
             page.wait_for_timeout(5000)
 
     print(f"Finished. Claimed {claimed} rewards.")
@@ -129,7 +128,7 @@ def claim_rewards(page):
 def run():
 
     if not EMAIL or not PASSWORD:
-        print("Missing KABAM_EMAIL or KABAM_PASSWORD secrets.")
+        print("Missing secrets.")
         return
 
     with sync_playwright() as p:
@@ -152,11 +151,13 @@ def run():
         except Exception as e:
 
             print(f"Runtime error: {e}")
+
             page.screenshot(path="runtime_error.png")
 
         finally:
 
             print("Process complete.")
+
             browser.close()
 
 
