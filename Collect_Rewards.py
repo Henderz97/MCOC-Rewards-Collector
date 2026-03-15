@@ -1,5 +1,6 @@
 import os
 import re
+import time
 from playwright.sync_api import sync_playwright
 
 # --- CONFIGURATION ---
@@ -18,44 +19,49 @@ def login_and_save(browser):
         print("Opening store page...")
         page.goto(STORE_URL, wait_until="networkidle", timeout=60000)
 
-        # סגירת קוקיז אם קיימים
+        # סגירת הודעת קוקיז אם היא מפריעה
         try:
-            print("Checking for cookies...")
-            page.get_by_role("button", name=re.compile("ACCEPT", re.I)).click(timeout=5000)
+            page.locator("button:has-text('ACCEPT')").click(timeout=5000)
         except:
             pass
 
-        print("Clicking top-right LOG IN button...")
-        # לחיצה על הכפתור בפינה הימנית העליונה
-        page.get_by_role("button", name=re.compile("LOG IN", re.I)).first.click()
-
-        print("Waiting for login modal to appear...")
-        # נחכה שהכפתור הכתום מהתמונה שלך יופיע באמת ב-DOM
-        kabam_btn = page.locator("button").filter(has_text=re.compile("LOGIN WITH KABAM", re.I))
-        kabam_btn.wait_for(state="visible", timeout=15000)
+        # אסטרטגיה: לחיצה חוזרת על כפתור הלוגין בפינה עד שהמודל מופיע
+        print("Attempting to trigger login modal...")
+        login_header_btn = page.locator("button").filter(has_text=re.compile(r"LOG IN", re.I)).first
         
-        # השהייה קלה כדי לוודא שהאנימציה הסתיימה
-        page.wait_for_timeout(2000)
+        # כפתור הכתום הספציפי מהתמונה שלך (לפי ה-Data Type שהאתר בדרך כלל משתמש בו)
+        kabam_orange_btn = page.locator("button").filter(has_text=re.compile(r"LOGIN WITH KABAM", re.I))
+        
+        for i in range(5):
+            print(f"Click attempt {i+1} on top-right LOG IN...")
+            login_header_btn.click(force=True)
+            page.wait_for_timeout(3000)
+            if kabam_orange_btn.is_visible():
+                print("Modal is visible!")
+                break
+        
+        if not kabam_orange_btn.is_visible():
+            raise Exception("Login modal never appeared even after multiple clicks.")
 
-        print("Clicking LOGIN WITH KABAM and waiting for popup...")
+        print("Opening Kabam Auth window...")
         with context.expect_page() as new_page_info:
-            # לחיצה עם force=True למקרה שיש Overlay סמוי
-            kabam_btn.click(force=True)
+            kabam_orange_btn.click(force=True)
         
         auth_page = new_page_info.value
         auth_page.wait_for_load_state("networkidle")
 
         print("Entering credentials...")
-        auth_page.fill('input[type="email"]', EMAIL)
-        auth_page.fill('input[type="password"]', PASSWORD)
+        # שימוש ב-Selectors יותר יציבים לשדות
+        auth_page.get_by_placeholder(re.compile("email", re.I)).fill(EMAIL)
+        auth_page.get_by_placeholder(re.compile("password", re.I)).fill(PASSWORD)
         auth_page.keyboard.press("Enter")
 
         print("Waiting for redirect back to store...")
-        # מחכים שהחנות תיטען מחדש ותזהה אותנו (לפי הופעת ה-CART)
+        # נחכה ל-CART שמעיד שהסשן נטען
         page.wait_for_selector("text=CART", timeout=60000)
         
         context.storage_state(path=SESSION_FILE)
-        print("Login successful and session saved.")
+        print("Login successful.")
 
     except Exception as e:
         print(f"Login failed: {e}")
@@ -66,19 +72,20 @@ def login_and_save(browser):
 
 def claim_rewards(page):
     print("Scanning for rewards...")
-    # גלילה מטה כדי להטעין את כל החנות
-    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-    page.wait_for_timeout(5000)
+    # גלילה הדרגתית כדי להטעין הכל
+    for _ in range(3):
+        page.evaluate("window.scrollBy(0, 1000)")
+        page.wait_for_timeout(1000)
     
     page.screenshot(path="store_view.png")
     
     claimed = 0
-    # ננסה למצוא כפתורי GET FREE או CLAIM
     while claimed < 20:
-        buttons = page.locator("button:has-text('GET FREE'), button:has-text('CLAIM')")
+        # איתור כפתורים
+        buttons = page.locator("button").filter(has_text=re.compile(r"GET FREE|CLAIM", re.I))
         
         if buttons.count() == 0:
-            print("No more claimable rewards found.")
+            print("No more claimable rewards.")
             break
 
         try:
@@ -88,30 +95,30 @@ def claim_rewards(page):
             page.wait_for_timeout(1000)
             btn.click(force=True)
             
-            # המתנה לאנימציית הצלחה וסגירת המודל עם Escape
+            # המתנה וסגירה
             page.wait_for_timeout(5000)
             page.keyboard.press("Escape")
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(1500)
             claimed += 1
-        except Exception as e:
-            print(f"Error claiming item: {e}. Refreshing...")
+        except:
+            print("Issue with button, refreshing...")
             page.reload(wait_until="networkidle")
-            page.wait_for_timeout(5000)
+            page.wait_for_timeout(4000)
             
-    print(f"Finished. Total rewards claimed: {claimed}")
+    print(f"Process ended. Claimed {claimed} items.")
 
 def run():
     if not EMAIL or not PASSWORD:
-        print("Missing KABAM_EMAIL or KABAM_PASSWORD secrets.")
+        print("Secrets missing.")
         return
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=HEADLESS)
         
-        # שלב 1: התחברות
+        # שלב 1: לוגין
         login_and_save(browser)
 
-        # שלב 2: שימוש בסשן שנשמר כדי לאסוף פרסים
+        # שלב 2: ביצוע פעולות
         context = browser.new_context(storage_state=SESSION_FILE)
         page = context.new_page()
 
