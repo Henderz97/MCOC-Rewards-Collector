@@ -24,13 +24,15 @@ def login_and_save(browser):
         except:
             pass
 
-        print("Clicking LOG IN...")
-        page.get_by_role("button", name=re.compile("log in", re.I)).click()
+        print("Clicking top-right LOG IN button...")
+        page.get_by_role("button", name=re.compile("log in", re.I)).first.click()
         page.wait_for_timeout(3000) 
 
         print("Opening Kabam Auth window...")
+        # The screenshot shows "LOGIN WITH KABAM". We use a regex to be safe.
         with context.expect_page() as new_page_info:
-            page.locator("button:has-text('Log In')").last.click()
+            # We target the orange button seen in your screenshot
+            page.locator("button", has_text=re.compile("LOGIN WITH KABAM", re.I)).click(force=True)
         
         auth_page = new_page_info.value
         auth_page.wait_for_load_state("networkidle")
@@ -40,10 +42,11 @@ def login_and_save(browser):
         auth_page.fill('input[type="password"]', PASSWORD)
         auth_page.keyboard.press("Enter")
 
-        # Wait for redirect back to main store
-        page.wait_for_selector("button:has-text('CART')", timeout=45000)
+        # Wait for redirect back to main store by checking for the CART
+        print("Waiting for redirect back to store...")
+        page.wait_for_selector("button:has-text('CART')", timeout=60000)
         
-        # Save session temporarily for this specific run
+        # Save session
         context.storage_state(path=SESSION_FILE)
         print("Login successful.")
     except Exception as e:
@@ -62,13 +65,13 @@ def claim_rewards(page):
     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
     page.wait_for_timeout(5000)
     
-    # Take a screenshot of the store state for your records
+    # Take a screenshot of the store state
     page.screenshot(path="store_view.png")
     
     claimed = 0
     # Loop to find and click rewards
     while claimed < 20:
-        # Check for both "GET FREE" and "CLAIM" labels
+        # Check for "GET FREE" or "CLAIM"
         buttons = page.locator("button:has-text('GET FREE'), button:has-text('CLAIM')")
         
         if buttons.count() == 0:
@@ -88,7 +91,7 @@ def claim_rewards(page):
             page.wait_for_timeout(2000)
             claimed += 1
         except Exception as e:
-            print("Could not click button, refreshing...")
+            print(f"Could not click button: {e}. Refreshing...")
             page.reload(wait_until="networkidle")
             page.wait_for_timeout(5000)
             
