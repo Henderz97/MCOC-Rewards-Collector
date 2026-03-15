@@ -2,9 +2,9 @@ name: MCOC Rewards Collector
 
 on:
   schedule:
-    # 05:00 UTC זה 08:00 בבוקר שעון ישראל (לפי UTC+3)
+    # 05:00 UTC זה 08:00 בבוקר שעון ישראל
     - cron: '0 5 * * *'
-  workflow_dispatch: # מאפשר הרצה ידנית בלחיצת כפתור
+  workflow_dispatch:
 
 jobs:
   build:
@@ -21,7 +21,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install playwright
+          pip install playwright requests
           playwright install chromium
 
       - name: Restore Session Cache
@@ -36,6 +36,8 @@ jobs:
         env:
           KABAM_EMAIL: ${{ secrets.KABAM_EMAIL }}
           KABAM_PASSWORD: ${{ secrets.KABAM_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python Collect_Rewards.py
 
       - name: Upload All Logs and Debug Info
