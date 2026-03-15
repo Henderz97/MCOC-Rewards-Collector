@@ -7,125 +7,154 @@ from playwright.sync_api import sync_playwright
 EMAIL = os.getenv("KABAM_EMAIL")
 PASSWORD = os.getenv("KABAM_PASSWORD")
 SESSION_FILE = "kabam_session.json"
-HEADLESS = True 
+HEADLESS = True
 # ---------------------
 
 def login_and_save(browser):
     print("Starting fresh login...")
+
     context = browser.new_context(viewport={'width': 1280, 'height': 720})
     page = context.new_page()
 
     try:
         page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle")
 
-        # Accept cookies
+        # Accept cookies if exists
         try:
             page.get_by_role("button", name=re.compile("accept", re.I)).click(timeout=5000)
         except:
             pass
 
-        print("Clicking top-right LOG IN button...")
-        # Target the specific login button in the nav header
-        page.locator("button:has-text('LOG IN')").first.click()
-        
+        print("Clicking LOG IN button...")
+        page.locator("text=LOG IN").first.click()
+
         print("Waiting for login modal...")
-        # Wait specifically for the orange login button to appear
-        login_button = page.get_by_role("button", name=re.compile("LOGIN WITH KABAM", re.I))
-        login_button.wait_for(state="visible", timeout=15000)
-        
-        # Small sleep to ensure the modal animation doesn't intercept the click
+
+        # Wait until modal container appears
+        page.wait_for_selector("text=LOGIN WITH KABAM", timeout=30000)
+
+        # small delay for animation
         page.wait_for_timeout(2000)
 
-        print("Opening Kabam Auth window...")
+        print("Opening Kabam login window...")
+
         with context.expect_page() as new_page_info:
-            login_button.click()
-        
+            page.locator("text=LOGIN WITH KABAM").first.click()
+
         auth_page = new_page_info.value
-        auth_page.wait_for_load_state("networkidle")
+        auth_page.wait_for_load_state()
 
         print("Entering credentials...")
+
         auth_page.fill('input[type="email"]', EMAIL)
         auth_page.fill('input[type="password"]', PASSWORD)
+
         auth_page.keyboard.press("Enter")
 
-        # Wait for redirect back to main store by checking for the CART
         print("Waiting for redirect back to store...")
-        page.wait_for_selector("button:has-text('CART')", timeout=60000)
-        
-        # Save session
+
+        page.wait_for_selector("text=CART", timeout=60000)
+
         context.storage_state(path=SESSION_FILE)
+
         print("Login successful.")
+
     except Exception as e:
         print(f"Login failed: {e}")
         page.screenshot(path="login_error.png")
         raise e
+
     finally:
         context.close()
 
+
 def claim_rewards(page):
+
     print("Scanning for rewards...")
-    
-    # Scroll to load all store sections
+
     page.evaluate("window.scrollTo(0, document.body.scrollHeight/2)")
     page.wait_for_timeout(2000)
+
     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
     page.wait_for_timeout(5000)
-    
-    # Take a screenshot of the store state
+
     page.screenshot(path="store_view.png")
-    
+
     claimed = 0
+
     while claimed < 20:
+
         buttons = page.locator("button:has-text('GET FREE'), button:has-text('CLAIM')")
-        
+
         if buttons.count() == 0:
-            print("No claimable rewards found at this time.")
+            print("No claimable rewards found.")
             break
 
-        print(f"Attempting to claim reward #{claimed + 1}...")
+        print(f"Claim attempt #{claimed+1}")
+
         try:
+
             btn = buttons.first
             btn.scroll_into_view_if_needed()
+
             page.wait_for_timeout(1000)
+
             btn.click(force=True)
-            
-            # Wait for the "Success" popup and close it
+
             page.wait_for_timeout(5000)
+
             page.keyboard.press("Escape")
+
             page.wait_for_timeout(2000)
+
             claimed += 1
+
         except Exception as e:
-            print(f"Could not click button: {e}. Refreshing...")
+
+            print(f"Claim failed: {e}, refreshing...")
+
             page.reload(wait_until="networkidle")
             page.wait_for_timeout(5000)
-            
-    print(f"Finished! Total items claimed: {claimed}")
+
+    print(f"Finished. Claimed {claimed} rewards.")
+
 
 def run():
+
     if not EMAIL or not PASSWORD:
-        print("Error: Secrets KABAM_EMAIL or KABAM_PASSWORD are missing.")
+        print("Missing KABAM_EMAIL or KABAM_PASSWORD secrets.")
         return
 
     with sync_playwright() as p:
+
         browser = p.chromium.launch(headless=HEADLESS)
-        
-        # Step 1: Login
+
         login_and_save(browser)
 
-        # Step 2: Use the session to claim
         context = browser.new_context(storage_state=SESSION_FILE)
+
         page = context.new_page()
 
         try:
+
             page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle")
+
             claim_rewards(page)
+
             page.screenshot(path="final_status.png")
+
         except Exception as e:
+
             print(f"Runtime error: {e}")
+
             page.screenshot(path="runtime_error.png")
+
         finally:
+
             print("Process complete.")
+
             browser.close()
+
 
 if __name__ == "__main__":
     run()
