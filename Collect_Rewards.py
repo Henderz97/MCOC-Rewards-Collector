@@ -7,106 +7,96 @@ EMAIL = os.getenv("KABAM_EMAIL")
 PASSWORD = os.getenv("KABAM_PASSWORD")
 SESSION_FILE = "kabam_session.json"
 STORE_URL = "https://store.playcontestofchampions.com/"
-HEADLESS = True 
+# הלינק הישיר שסיפקת ל-Xsolla
+XSOLLA_AUTH_URL = "https://login.xsolla.com/api/social/kabam/login_redirect?projectId=2c9de8c3-c57c-4bfe-83e6-20416f767517&login_url=https%3A%2F%2Fstore.playcontestofchampions.com&payload=%7B%7D&locale=en_US&trackId=&login_url=https%3A%2F%2Flogin-widget.xsolla.com%2Flatest%2Fsocial-auth-succeed%3FprojectId%3D2c9de8c3-c57c-4bfe-83e6-20416f767517%26callbackUrl%3Dhttps%3A%2F%2Fstore.playcontestofchampions.com"
 
 def login_and_save(browser):
-    print("Starting fresh login...")
+    print("Starting direct Xsolla login...")
     context = browser.new_context(viewport={"width": 1280, "height": 720})
     page = context.new_page()
 
     try:
-        print("Opening store page...")
-        page.goto(STORE_URL, wait_until="domcontentloaded", timeout=90000)
-        page.wait_for_timeout(5000)
-
-        # לחיצה על כפתור הלוגין הראשי בפינה
-        print("Triggering login modal...")
-        page.locator("button").filter(has_text=re.compile(r"LOG IN", re.I)).first.click(force=True)
-        page.wait_for_timeout(3000)
-
-        print("Executing force-click on Kabam login via JS...")
-        # ה-JS הזה עושה 3 פעולות: 
-        # 1. מוצא את הכפתור הכתום מה-HTML שלך.
-        # 2. מוודא שהמודל לא מוסתר (hidden).
-        # 3. לוחץ עליו כדי לפתוח את חלון הסיסמה.
-        with context.expect_page() as new_page_info:
-            page.evaluate("""() => {
-                const btn = document.querySelector('button[data-type="user-id-button-continue"]');
-                const container = document.querySelector('.user-id-modal__container');
-                if(container) container.removeAttribute('hidden');
-                if(btn) btn.click();
-            }""")
+        # ניווט ישיר לדף הזנת הפרטים
+        print("Navigating to Xsolla login page...")
+        page.goto(XSOLLA_AUTH_URL, wait_until="networkidle", timeout=60000)
         
-        auth_page = new_page_info.value
-        auth_page.wait_for_load_state("networkidle")
-
-        print("Entering credentials...")
-        auth_page.locator('input[type="email"]').fill(EMAIL)
-        auth_page.locator('input[type="password"]').fill(PASSWORD)
-        auth_page.keyboard.press("Enter")
-
-        print("Waiting for store to reload with session...")
-        page.wait_for_selector("text=CART", timeout=90000)
+        print("Filling credentials...")
+        # נחכה לשדות האימייל והסיסמה של Kabam בתוך דף ה-Xsolla
+        page.wait_for_selector('input[type="email"]', timeout=30000)
+        page.fill('input[type="email"]', EMAIL)
+        page.fill('input[type="password"]', PASSWORD)
         
+        print("Submitting...")
+        # לחיצה על כפתור ה-Log In בדף של Xsolla
+        # בדרך כלל יש שם כפתור מסוג submit או עם טקסט Log In
+        page.keyboard.press("Enter")
+
+        print("Waiting for redirection back to store...")
+        # מחכים שהדף יחזור לכתובת של החנות
+        page.wait_for_url(re.compile(r"store\.playcontestofchampions"), timeout=60000)
+        
+        # אישור סופי שהגענו והסשן נטען
+        page.wait_for_selector("text=CART", timeout=30000)
+        
+        # שמירת הסשן
         context.storage_state(path=SESSION_FILE)
-        print("Login successful.")
+        print("Login successful! Session saved.")
 
     except Exception as e:
         print(f"Login failed: {e}")
         page.screenshot(path="login_error.png")
+        # הדפסת ה-URL הנוכחי כדי לראות איפה נתקענו
+        print(f"Stuck at URL: {page.url}")
         raise e
     finally:
         context.close()
 
 def claim_rewards(page):
     print("Scanning for rewards...")
-    # גלילה איטית
-    for _ in range(6):
+    # גלילה אגרסיבית להטענת כל הדף
+    for _ in range(8):
         page.mouse.wheel(0, 1000)
-        page.wait_for_timeout(1000)
+        page.wait_for_timeout(800)
     
-    claimed = 0
-    while claimed < 20:
-        # איתור כפתורי GET FREE או CLAIM
-        buttons = page.locator("button").filter(has_text=re.compile(r"GET FREE|CLAIM", re.I))
-        
-        if buttons.count() == 0:
-            print("No more claimable rewards.")
-            break
+    # מציאת כל כפתורי ה-Claim
+    buttons = page.locator("button").filter(has_text=re.compile(r"GET FREE|CLAIM", re.I))
+    count = buttons.count()
+    print(f"Found {count} buttons.")
 
+    claimed = 0
+    for i in range(count):
         try:
-            print(f"Claiming reward #{claimed + 1}...")
-            btn = buttons.first
-            btn.scroll_into_view_if_needed()
-            page.wait_for_timeout(1000)
-            btn.click(force=True)
-            
-            page.wait_for_timeout(5000)
-            page.keyboard.press("Escape") # סגירת הפופ-אפ של ה-Success
-            page.wait_for_timeout(2000)
-            claimed += 1
+            btn = buttons.nth(i)
+            # בדיקה שהכפתור באמת זמין ולא מוסתר
+            if btn.is_visible():
+                btn.scroll_into_view_if_needed()
+                btn.click(force=True)
+                print(f"Claimed item {claimed + 1}")
+                page.wait_for_timeout(3000)
+                page.keyboard.press("Escape") # סגירת הודעת הצלחה
+                claimed += 1
         except:
-            page.reload(wait_until="domcontentloaded")
-            page.wait_for_timeout(5000)
-            
-    print(f"Finished! Claimed {claimed} items.")
+            continue
+    print(f"Finished claiming {claimed} items.")
 
 def run():
     if not EMAIL or not PASSWORD:
-        print("Missing secrets.")
+        print("Secrets missing!")
         return
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=HEADLESS)
+        browser = p.chromium.launch(headless=True)
+        
+        # שלב 1: לוגין ושמירת קוקיז
         login_and_save(browser)
         
-        # הרצה שניה עם הסשן השמור
+        # שלב 2: הרצה עם הקוקיז השמורים
         context = browser.new_context(storage_state=SESSION_FILE)
         page = context.new_page()
-        try:
-            page.goto(STORE_URL, wait_until="domcontentloaded")
-            claim_rewards(page)
-        finally:
-            browser.close()
+        page.goto(STORE_URL, wait_until="domcontentloaded")
+        claim_rewards(page)
+        
+        browser.close()
 
 if __name__ == "__main__":
     run()
