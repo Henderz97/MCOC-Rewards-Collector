@@ -1,6 +1,5 @@
 import os
 import re
-import time
 from playwright.sync_api import sync_playwright
 
 # --- CONFIGURATION ---
@@ -10,39 +9,44 @@ SESSION_FILE = "kabam_session.json"
 HEADLESS = True
 # ---------------------
 
+STORE_URL = "https://store.playcontestofchampions.com/"
+
 def login_and_save(browser):
+
     print("Starting fresh login...")
 
     context = browser.new_context(viewport={'width': 1280, 'height': 720})
     page = context.new_page()
 
     try:
-        page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle")
 
-        # Accept cookies if exists
+        print("Opening store page...")
+
+        page.goto(STORE_URL, wait_until="domcontentloaded", timeout=60000)
+
+        # accept cookies
         try:
-            page.get_by_role("button", name=re.compile("accept", re.I)).click(timeout=5000)
+            print("Accepting cookies...")
+            page.locator("text=ACCEPT ALL").click(timeout=5000)
         except:
             pass
 
-        print("Clicking LOG IN button...")
+        print("Clicking LOG IN...")
+
         page.locator("text=LOG IN").first.click()
 
-        print("Waiting for login modal...")
+        print("Waiting for Kabam login button...")
 
-        # Wait until modal container appears
         page.wait_for_selector("text=LOGIN WITH KABAM", timeout=30000)
-
-        # small delay for animation
-        page.wait_for_timeout(2000)
 
         print("Opening Kabam login window...")
 
         with context.expect_page() as new_page_info:
-            page.locator("text=LOGIN WITH KABAM").first.click()
+            page.locator("text=LOGIN WITH KABAM").click()
 
         auth_page = new_page_info.value
-        auth_page.wait_for_load_state()
+
+        auth_page.wait_for_load_state("domcontentloaded")
 
         print("Entering credentials...")
 
@@ -60,11 +64,15 @@ def login_and_save(browser):
         print("Login successful.")
 
     except Exception as e:
+
         print(f"Login failed: {e}")
+
         page.screenshot(path="login_error.png")
+
         raise e
 
     finally:
+
         context.close()
 
 
@@ -90,7 +98,7 @@ def claim_rewards(page):
             print("No claimable rewards found.")
             break
 
-        print(f"Claim attempt #{claimed+1}")
+        print(f"Attempting to claim reward #{claimed+1}")
 
         try:
 
@@ -113,7 +121,8 @@ def claim_rewards(page):
 
             print(f"Claim failed: {e}, refreshing...")
 
-            page.reload(wait_until="networkidle")
+            page.reload(wait_until="domcontentloaded")
+
             page.wait_for_timeout(5000)
 
     print(f"Finished. Claimed {claimed} rewards.")
@@ -137,7 +146,7 @@ def run():
 
         try:
 
-            page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle")
+            page.goto(STORE_URL, wait_until="domcontentloaded", timeout=60000)
 
             claim_rewards(page)
 
