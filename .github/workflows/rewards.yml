@@ -1,37 +1,55 @@
-name: Collect Game Rewards
+name: MCOC Rewards Collector
 
 on:
   schedule:
-    - cron: '0 6 * * *'
-  workflow_dispatch:
+    - cron: '0 5 * * *' # ירוץ כל יום ב-8:00 שעון ישראל
+  workflow_dispatch: # מאפשר לך להריץ ידנית בלחיצת כפתור
 
 jobs:
-  run-script:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
       - name: Install dependencies
         run: |
           pip install playwright
-          playwright install chromium --with-deps
+          playwright install chromium
 
-      - name: Run script
+      # --- כאן קורה הקסם של הסשן ---
+      - name: Restore Session Cache
+        uses: actions/cache@v3
+        with:
+          path: kabam_session.json
+          key: ${{ runner.os }}-kabam-session-${{ hashFiles('**/Collect_Rewards.py') }}
+          restore-keys: |
+            ${{ runner.os }}-kabam-session-
+
+      - name: Run Collector
         env:
           KABAM_EMAIL: ${{ secrets.KABAM_EMAIL }}
           KABAM_PASSWORD: ${{ secrets.KABAM_PASSWORD }}
         run: python Collect_Rewards.py
 
-      - name: Upload Screenshots
+      # מעלה צילומי מסך אם יש שגיאה או בסיום
+      - name: Upload Debug Artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: upload-artifact@v4
         with:
           name: debug-screenshots
-          path: "*.png"
-          retention-days: 7
+          path: |
+            *.png
+            kabam_session.json
+
+      - name: Save Session Cache
+        if: always()
+        uses: actions/cache/save@v3
+        with:
+          path: kabam_session.json
+          key: ${{ runner.os }}-kabam-session-${{ hashFiles('**/Collect_Rewards.py') }}
