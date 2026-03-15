@@ -12,7 +12,7 @@ STORE_URL = "https://store.playcontestofchampions.com/"
 XSOLLA_AUTH_URL = "https://login.xsolla.com/api/social/kabam/login_redirect?projectId=2c9de8c3-c57c-4bfe-83e6-20416f767517&login_url=https%3A%2F%2Fstore.playcontestofchampions.com&payload=%7B%7D&locale=en_US&trackId=&login_url=https%3A%2F%2Flogin-widget.xsolla.com%2Flatest%2Fsocial-auth-succeed%3FprojectId%3D2c9de8c3-c57c-4bfe-83e6-20416f767517%26callbackUrl%3Dhttps%3A%2F%2Fstore.playcontestofchampions.com"
 
 def save_debug_info(page, name):
-    """פונקציה לשמירת צילום מסך ו-HTML לדיבאג"""
+    """פונקציה לשמירת צילום מסך ו-HTML לדיבאג מלא"""
     try:
         page.screenshot(path=f"./{name}.png")
         with open(f"./{name}.html", "w", encoding="utf-8") as f:
@@ -58,14 +58,25 @@ def login_and_save(browser):
 def claim_rewards(page):
     print("Scanning for rewards...")
     page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(5000) 
+    page.wait_for_timeout(3000) 
+
+    # --- טיפול בבאנר ה-Cookies ---
+    # הבאנר הירוק עלול להסתיר כפתורים בתחתית המסך
+    try:
+        cookie_btn = page.locator("button:has-text('ACCEPT ALL')")
+        if cookie_btn.is_visible():
+            print("Cookie banner detected. Clicking 'ACCEPT ALL'...")
+            cookie_btn.click()
+            page.wait_for_timeout(1000)
+    except Exception as e:
+        print(f"Note: Could not clear cookie banner: {e}")
 
     # גלילה הדרגתית כדי להטעין את כל הפריטים
     for i in range(8):
         page.evaluate("window.scrollBy(0, 1000)")
         time.sleep(1)
 
-    # צילום מסך של החנות המלאה לפני האיסוף
+    # צילום מסך של החנות המלאה ללא הבאנר
     save_debug_info(page, "3_store_scanned_view")
 
     # חיפוש כפתורי איסוף (FREE/GET/CLAIM)
@@ -106,7 +117,6 @@ def run():
         return
 
     with sync_playwright() as p:
-        # הפעלה במצב headless עבור GitHub Actions
         browser = p.chromium.launch(headless=True)
         
         # לוגין אם אין קובץ סשן שמור מה-Cache
@@ -117,22 +127,22 @@ def run():
             print("Session file found in cache. Using existing login.")
 
         # טעינת הדפדפן עם הסשן הקיים
-        context = browser.new_context(storage_state=SESSION_FILE)
+        context = browser.new_context(viewport={"width": 1280, "height": 720}, storage_state=SESSION_FILE)
         page = context.new_page()
         
         try:
             print(f"Opening store...")
             page.goto(STORE_URL, wait_until="networkidle")
             
-            # צילום מסך מיידי - חייב להיווצר בכל הרצה
+            # צילום מסך מיידי - מוודא חיבור תקין
             save_debug_info(page, "0_landing_check")
             
-            # בדיקה אם אנחנו עדיין מחוברים (אם אין עגלה, הסשן פג)
+            # בדיקה אם אנחנו עדיין מחוברים (אם אין עגלה או כפתור לוגין מופיע)
             if page.locator("text=CART").count() == 0:
-                print("Session expired. Re-logging...")
+                print("Session expired or invalid. Re-logging...")
                 context.close()
                 login_and_save(browser)
-                context = browser.new_context(storage_state=SESSION_FILE)
+                context = browser.new_context(viewport={"width": 1280, "height": 720}, storage_state=SESSION_FILE)
                 page = context.new_page()
                 page.goto(STORE_URL, wait_until="networkidle")
 
