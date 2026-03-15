@@ -2,7 +2,7 @@ name: MCOC Rewards Collector
 
 on:
   schedule:
-    - cron: '0 10 * * *' # ירוץ כל יום ב-10:00 UTC (12:00 שעון ישראל)
+    - cron: '0 5 * * *' # ירוץ כל יום ב-8:00
   workflow_dispatch: # מאפשר הרצה ידנית
 
 jobs:
