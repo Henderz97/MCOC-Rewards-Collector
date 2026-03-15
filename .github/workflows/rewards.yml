@@ -2,8 +2,8 @@ name: MCOC Rewards Collector
 
 on:
   schedule:
-    - cron: '0 5 * * *' # ירוץ כל יום ב-8:00 שעון ישראל
-  workflow_dispatch: # מאפשר לך להריץ ידנית בלחיצת כפתור
+    - cron: '0 10 * * *' # ירוץ כל יום ב-10:00 UTC (12:00 שעון ישראל)
+  workflow_dispatch: # מאפשר הרצה ידנית
 
 jobs:
   build:
@@ -22,7 +22,6 @@ jobs:
           pip install playwright
           playwright install chromium
 
-      # --- כאן קורה הקסם של הסשן ---
       - name: Restore Session Cache
         uses: actions/cache@v3
         with:
@@ -37,12 +36,12 @@ jobs:
           KABAM_PASSWORD: ${{ secrets.KABAM_PASSWORD }}
         run: python Collect_Rewards.py
 
-      # מעלה צילומי מסך אם יש שגיאה או בסיום
+      # תיקון השגיאה: הוספת actions/ לפני upload-artifact
       - name: Upload Debug Artifacts
         if: always()
-        uses: upload-artifact@v4
+        uses: actions/upload-artifact@v4
         with:
-          name: debug-screenshots
+          name: debug-results
           path: |
             *.png
             kabam_session.json
