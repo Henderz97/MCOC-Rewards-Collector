@@ -2,15 +2,14 @@ name: Collect Game Rewards
 
 on:
   schedule:
-    - cron: '0 6 * * *'  # Runs daily at 6:00 UTC
+    - cron: '0 6 * * *'
   workflow_dispatch:
 
 jobs:
   run-script:
-    runs-on: ubuntu-22.04
-
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -20,16 +19,19 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-          sudo apt-get update
-          sudo apt-get install -y xvfb libnss3 fonts-liberation libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 libfontconfig1 \
-          libx11-6 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxrandr2 libgbm1 libasound2 libpangocairo-1.0-0 libpango-1.0-0 \
-          fonts-noto-color-emoji
+          pip install playwright
           playwright install chromium --with-deps
 
-      - name: Run Python script
+      - name: Run script
         env:
-          EMAIL: ${{ secrets.EMAIL }}
-          PASSWORD: ${{ secrets.PASSWORD }}
-        run: xvfb-run --auto-servernum python Collect_Rewards.py
+          KABAM_EMAIL: ${{ secrets.KABAM_EMAIL }}
+          KABAM_PASSWORD: ${{ secrets.KABAM_PASSWORD }}
+        run: python Collect_Rewards.py
+
+      - name: Upload Screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: "*.png"
+          retention-days: 7
