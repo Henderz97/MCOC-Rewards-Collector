@@ -25,14 +25,20 @@ def login_and_save(browser):
             pass
 
         print("Clicking top-right LOG IN button...")
-        page.get_by_role("button", name=re.compile("log in", re.I)).first.click()
-        page.wait_for_timeout(3000) 
+        # Target the specific login button in the nav header
+        page.locator("button:has-text('LOG IN')").first.click()
+        
+        print("Waiting for login modal...")
+        # Wait specifically for the orange login button to appear
+        login_button = page.get_by_role("button", name=re.compile("LOGIN WITH KABAM", re.I))
+        login_button.wait_for(state="visible", timeout=15000)
+        
+        # Small sleep to ensure the modal animation doesn't intercept the click
+        page.wait_for_timeout(2000)
 
         print("Opening Kabam Auth window...")
-        # The screenshot shows "LOGIN WITH KABAM". We use a regex to be safe.
         with context.expect_page() as new_page_info:
-            # We target the orange button seen in your screenshot
-            page.locator("button", has_text=re.compile("LOGIN WITH KABAM", re.I)).click(force=True)
+            login_button.click()
         
         auth_page = new_page_info.value
         auth_page.wait_for_load_state("networkidle")
@@ -69,9 +75,7 @@ def claim_rewards(page):
     page.screenshot(path="store_view.png")
     
     claimed = 0
-    # Loop to find and click rewards
     while claimed < 20:
-        # Check for "GET FREE" or "CLAIM"
         buttons = page.locator("button:has-text('GET FREE'), button:has-text('CLAIM')")
         
         if buttons.count() == 0:
@@ -99,7 +103,7 @@ def claim_rewards(page):
 
 def run():
     if not EMAIL or not PASSWORD:
-        print("Error: Secrets KABAM_EMAIL or KABAM_PASSWORD are missing in GitHub Settings.")
+        print("Error: Secrets KABAM_EMAIL or KABAM_PASSWORD are missing.")
         return
 
     with sync_playwright() as p:
@@ -108,14 +112,13 @@ def run():
         # Step 1: Login
         login_and_save(browser)
 
-        # Step 2: Use the newly created session to claim
+        # Step 2: Use the session to claim
         context = browser.new_context(storage_state=SESSION_FILE)
         page = context.new_page()
 
         try:
             page.goto("https://store.playcontestofchampions.com/", wait_until="networkidle")
             claim_rewards(page)
-            # Final success screenshot
             page.screenshot(path="final_status.png")
         except Exception as e:
             print(f"Runtime error: {e}")
