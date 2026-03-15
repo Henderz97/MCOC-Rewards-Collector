@@ -2,12 +2,14 @@ name: MCOC Rewards Collector
 
 on:
   schedule:
-    - cron: '0 5 * * *' # ירוץ כל יום ב-8:00
-  workflow_dispatch: # מאפשר הרצה ידנית
+    # 05:00 UTC זה 08:00 בבוקר שעון ישראל (לפי UTC+3)
+    - cron: '0 5 * * *'
+  workflow_dispatch: # מאפשר הרצה ידנית בלחיצת כפתור
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -36,15 +38,16 @@ jobs:
           KABAM_PASSWORD: ${{ secrets.KABAM_PASSWORD }}
         run: python Collect_Rewards.py
 
-      # תיקון השגיאה: הוספת actions/ לפני upload-artifact
-      - name: Upload Debug Artifacts
+      - name: Upload All Logs and Debug Info
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: debug-results
+          name: mcoc-full-debug-pack
           path: |
             *.png
-            kabam_session.json
+            *.html
+            *.json
+          retention-days: 3
 
       - name: Save Session Cache
         if: always()
