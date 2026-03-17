@@ -24,30 +24,40 @@ def send_telegram_msg(message):
 def save_debug_info(page, name):
     try:
         page.screenshot(path=f"./{name}.png")
-    except: pass
+        print(f"DEBUG: Saved screenshot {name}.png")
+    except Exception as e:
+        print(f"DEBUG: Failed to save screenshot: {e}")
 
 def check_auth(page):
-    """מחזיר True אם מחוברים, False אם לא"""
+    """בדיקה משולבת: מחפש שם משתמש או CART. אם מופיע LOG IN - לא מחובר."""
     if page.locator("text=LOG IN").is_visible():
         return False
-    return page.locator("text=CART").is_visible() or page.locator("[class*='player-name']").is_visible()
+    # מחפש את האלמנט של השם שלך או כפתור העגלה
+    is_auth = page.locator("button:has-text('CART')").is_visible() or page.locator("[class*='player-name']").is_visible()
+    return is_auth
 
 def login_and_save(browser):
-    print("Starting fresh login...")
+    print("Executing login_and_save...")
     context = browser.new_context(viewport={"width": 1280, "height": 720})
     page = context.new_page()
     try:
         page.goto(XSOLLA_AUTH_URL, wait_until="networkidle", timeout=60000)
+        save_debug_info(page, "1_login_page")
+        
         page.wait_for_selector('input[type="email"]', timeout=30000)
         page.fill('input[type="email"]', EMAIL)
         page.fill('input[type="password"]', PASSWORD)
         page.keyboard.press("Enter")
+        
+        print("Waiting for redirection back to store...")
         page.wait_for_url(re.compile(r"store\.playcontestofchampions"), timeout=60000)
-        page.wait_for_timeout(5000) # זמן טעינה לממשק
+        page.wait_for_timeout(7000) # זמן אקסטרה לטעינת הממשק
+        
+        save_debug_info(page, "2_after_login_redirect")
         context.storage_state(path=SESSION_FILE)
-        print("Login success.")
+        print("Session state saved.")
     except Exception as e:
-        save_debug_info(page, "login_fail")
+        save_debug_info(page, "login_critical_error")
         raise e
     finally:
         context.close()
@@ -56,27 +66,33 @@ def claim_rewards(page):
     print("Scanning for rewards...")
     page.wait_for_load_state("networkidle")
     
-    # ניסיון סגירת קוקיז
+    # סגירת באנר עוגיות אם מפריע
     try:
-        if page.locator("button:has-text('ACCEPT ALL')").is_visible():
-            page.locator("button:has-text('ACCEPT ALL')").click()
-            page.wait_for_timeout(1000)
+        cookie_btn = page.locator("button:has-text('ACCEPT ALL')")
+        if cookie_btn.is_visible():
+            print("Cookie banner detected, clicking Accept All...")
+            cookie_btn.click()
+            page.wait_for_timeout(2000)
     except: pass
 
-    for i in range(8):
+    # גלילה לטעינת כל הכפתורים
+    for i in range(5):
         page.evaluate("window.scrollBy(0, 1000)")
         time.sleep(0.5)
 
+    save_debug_info(page, "3_store_scanned")
+    
     claimed = 0
-    max_attempts = 10 
+    max_attempts = 12
     
     while claimed < max_attempts:
-        # מחפש כפתור FREE/GET שאינו בתשלום
         selector = "button:has-text('FREE'), button:has-text('GET')"
         buttons = page.locator(selector)
+        count = buttons.count()
+        print(f"Found {count} potential reward buttons.")
         
         target_btn = None
-        for i in range(buttons.count()):
+        for i in range(count):
             btn = buttons.nth(i)
             txt = btn.inner_text().upper()
             if "$" not in txt and "MONTH" not in txt and btn.is_visible():
@@ -84,32 +100,45 @@ def claim_rewards(page):
                 break
         
         if not target_btn:
+            print("No more valid buttons to click.")
             break
 
         try:
-            print(f"Claiming item #{claimed + 1}...")
+            btn_label = target_btn.inner_text().strip()
+            print(f"Claiming: {btn_label}")
             target_btn.scroll_into_view_if_needed()
             target_btn.click(force=True)
             page.wait_for_timeout(5000)
+            
+            # בדיקת לוגין תוך כדי איסוף (הפופ-אפ הכתום)
+            if page.locator("text=LOGIN WITH KABAM").is_visible():
+                print("Auth popup appeared - session invalid!")
+                return "AUTH_FAILED"
+
             page.keyboard.press("Escape")
             page.wait_for_timeout(2000)
             claimed += 1
-        except:
+            save_debug_info(page, f"claim_{claimed}_done")
+        except Exception as e:
+            print(f"Error during claim: {e}")
             break
 
     if claimed > 0:
         send_telegram_msg(f"✅ Successfully claimed {claimed} rewards!")
     else:
-        send_telegram_msg("👀 Checked store - no free rewards found.")
+        send_telegram_msg("👀 No rewards found today.")
+    return "SUCCESS"
 
 def run():
-    if not EMAIL or not PASSWORD: return
+    if not EMAIL or not PASSWORD:
+        print("CRITICAL: Secrets missing!")
+        return
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         
-        # לוגין אם אין קובץ סשן
         if not os.path.exists(SESSION_FILE):
+            print("No session file found, starting login...")
             login_and_save(browser)
 
         context = browser.new_context(viewport={"width": 1280, "height": 720}, storage_state=SESSION_FILE)
@@ -118,19 +147,26 @@ def run():
         try:
             print("Opening store...")
             page.goto(STORE_URL, wait_until="networkidle")
+            page.wait_for_timeout(5000)
             
-            # בדיקה אם באמת מחוברים
+            save_debug_info(page, "0_initial_landing")
+            
             if not check_auth(page):
-                print("Not logged in. Retrying login...")
+                print("Auth check failed, re-logging...")
                 context.close()
                 login_and_save(browser)
                 context = browser.new_context(viewport={"width": 1280, "height": 720}, storage_state=SESSION_FILE)
                 page = context.new_page()
                 page.goto(STORE_URL, wait_until="networkidle")
+                page.wait_for_timeout(5000)
 
-            claim_rewards(page)
+            result = claim_rewards(page)
+            if result == "AUTH_FAILED":
+                print("Retrying after auth failure...")
+                # כאן אפשר להוסיף לוגיקה של לוגין חוזר אם תרצה
             
         except Exception as e:
+            print(f"Runtime Exception: {e}")
             send_telegram_msg(f"⚠️ Error: {str(e)[:50]}")
         finally:
             browser.close()
