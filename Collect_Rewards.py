@@ -32,14 +32,33 @@ def save_debug_info(page, name):
     except:
         pass
 
-def is_logged_in(page):
-    """בדיקה אמינה אם המשתמש מחובר באמת"""
+def handle_overlays(page):
+    """מסירה באנרים של קוקיז או פופ-אפים שחוסמים את המסך"""
     try:
-        # אם מופיע כפתור LOG IN - אנחנו בחוץ
+        # ניסיון ללחוץ על 'ACCEPT ALL'
+        cookie_btn = page.locator("button:has-text('ACCEPT ALL')")
+        if cookie_btn.is_visible():
+            print("Cleaning cookie banner...")
+            cookie_btn.click()
+            page.wait_for_timeout(1000)
+        
+        # אם הבאנר עדיין שם - פשוט נמחק אותו דרך JS כדי שלא יפריע לקליקים
+        page.evaluate("""
+            const overlay = document.querySelector('.Banner__StyledBanner-sc-166puj-0');
+            if (overlay) overlay.remove();
+            const backdrop = document.querySelector('.CookieBanner__Backdrop-sc-');
+            if (backdrop) backdrop.remove();
+        """)
+    except:
+        pass
+
+def is_logged_in(page):
+    handle_overlays(page)
+    try:
         if page.locator("text=LOG IN").is_visible():
             return False
-        # אם מופיע ה-CART וגם אין כפתור לוגין, סימן שאנחנו בפנים
-        return page.locator(".u-text-player-name").is_visible() or page.locator("button:has-text('CART')").is_visible()
+        # מחפשים את שם המשתמש שלך (ZACHHENDE...) שמופיע בתמונה ששלחת
+        return page.locator("button:has-text('ZACHHENDE')").is_visible() or page.locator(".u-text-player-name").is_visible()
     except:
         return False
 
@@ -49,20 +68,24 @@ def login_and_save(browser):
     page = context.new_page()
     try:
         page.goto(XSOLLA_AUTH_URL, wait_until="networkidle", timeout=60000)
+        
+        # וידוא שהעוגיות לא חוסמות את שדות הטקסט
+        handle_overlays(page)
+        
         page.wait_for_selector('input[type="email"]', timeout=30000)
         page.fill('input[type="email"]', EMAIL)
         page.fill('input[type="password"]', PASSWORD)
         page.keyboard.press("Enter")
         
-        # מחכים שהדף יחזור לחנות ושהשם משתמש יופיע
         page.wait_for_url(re.compile(r"store\.playcontestofchampions"), timeout=60000)
         page.wait_for_load_state("networkidle")
         
         if is_logged_in(page):
             context.storage_state(path=SESSION_FILE)
-            print("Login successful and session saved.")
+            print("Login successful.")
         else:
-            raise Exception("Login finished but user still not detected as logged in.")
+            save_debug_info(page, "login_failed_final_check")
+            raise Exception("Auth completed but user session not detected.")
             
     except Exception as e:
         save_debug_info(page, "login_error_state")
@@ -74,15 +97,7 @@ def login_and_save(browser):
 def claim_rewards(page):
     print("Scanning for rewards...")
     page.wait_for_load_state("networkidle")
-    
-    # סגירת באנר עוגיות
-    try:
-        cookie_btn = page.locator("button:has-text('ACCEPT ALL')")
-        if cookie_btn.is_visible():
-            cookie_btn.click()
-            page.wait_for_timeout(1000)
-    except:
-        pass
+    handle_overlays(page)
 
     for i in range(5):
         page.evaluate("window.scrollBy(0, 1000)")
@@ -90,7 +105,7 @@ def claim_rewards(page):
 
     claimed = 0
     while claimed < 15:
-        # מחפשים רק כפתורי FREE שאינם בתוך "UNIT STORE" (למנוע לחיצה על מוצרים בתשלום)
+        handle_overlays(page)
         selector = "button:has-text('FREE'), button:has-text('GET')"
         buttons = page.locator(selector)
         
@@ -107,17 +122,15 @@ def claim_rewards(page):
             break
 
         try:
-            print(f"Attempting to claim reward #{claimed + 1}...")
+            print(f"Attempting reward #{claimed + 1}...")
             target_btn.scroll_into_view_if_needed()
             target_btn.click(force=True)
             page.wait_for_timeout(3000)
 
-            # בדיקה קריטית: האם קפץ חלון לוגין כתום?
             if page.locator("text=LOGIN WITH KABAM").is_visible():
-                print("Detected login popup during claim. Auth failed!")
+                print("Auth expired during claim.")
                 return "AUTH_FAILED"
 
-            # סגירת פופ-אפ אישור
             page.keyboard.press("Escape")
             page.wait_for_timeout(1500)
             claimed += 1
@@ -125,9 +138,9 @@ def claim_rewards(page):
             break
 
     if claimed > 0:
-        send_telegram_msg(f"✅ Successfully claimed {claimed} rewards!")
+        send_telegram_msg(f"✅ Claimed {claimed} rewards!")
     else:
-        send_telegram_msg("👀 Checked - no rewards available.")
+        send_telegram_msg("👀 No rewards found today.")
     return "SUCCESS"
 
 def run():
@@ -136,7 +149,6 @@ def run():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         
-        # אם אין סשן, מתחברים
         if not os.path.exists(SESSION_FILE):
             login_and_save(browser)
 
@@ -146,7 +158,6 @@ def run():
         try:
             page.goto(STORE_URL, wait_until="networkidle")
             
-            # בדיקת לוגין לפני שמתחילים
             if not is_logged_in(page):
                 print("Session invalid. Re-logging...")
                 context.close()
@@ -157,12 +168,9 @@ def run():
 
             result = claim_rewards(page)
             
-            # אם תוך כדי איסוף גילינו שאנחנו לא מחוברים
             if result == "AUTH_FAILED":
-                print("Auth failed during process. Retrying once with fresh login...")
                 context.close()
                 login_and_save(browser)
-                # הרצה חוזרת אחרי לוגין טרי
                 context = browser.new_context(viewport={"width": 1280, "height": 720}, storage_state=SESSION_FILE)
                 page = context.new_page()
                 page.goto(STORE_URL, wait_until="networkidle")
@@ -170,7 +178,6 @@ def run():
 
         except Exception as e:
             send_telegram_msg(f"⚠️ Error: {str(e)[:50]}")
-            save_debug_info(page, "fatal_error")
         finally:
             browser.close()
 
