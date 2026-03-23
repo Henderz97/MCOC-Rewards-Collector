@@ -61,6 +61,7 @@ def claim_rewards(page):
     print("Scanning for rewards...")
     page.wait_for_load_state("networkidle")
     
+    # סגירת קוקיז
     try:
         cookie_btn = page.get_by_role("button", name="ACCEPT ALL").first
         if cookie_btn.is_visible():
@@ -68,7 +69,8 @@ def claim_rewards(page):
             page.wait_for_timeout(2000)
     except: pass
 
-    for i in range(8):
+    # גלילה מסיבית כדי לוודא שכל האלמנטים נטענים
+    for i in range(10):
         page.evaluate("window.scrollBy(0, 1000)")
         time.sleep(0.5)
 
@@ -76,7 +78,7 @@ def claim_rewards(page):
     max_attempts = 15
     
     while claimed < max_attempts:
-        # עדכון הסלקטור: הוספנו חיפוש למילה CLAIM
+        # מחפש את כל המילים הרלוונטיות
         selector = "button:has-text('FREE'), button:has-text('GET'), button:has-text('CLAIM')"
         buttons = page.locator(selector)
         count = buttons.count()
@@ -85,15 +87,29 @@ def claim_rewards(page):
         for i in range(count):
             btn = buttons.nth(i)
             try:
+                # 1. בדיקה אם הכפתור פעיל
+                if not btn.is_enabled():
+                    continue
+
                 txt = btn.inner_text().upper()
-                # מוודא שזה לא כפתור רכישה (שמכיל $) ולא מינוי חודשי
-                if "$" not in txt and "MONTH" not in txt and btn.is_visible():
+                
+                # 2. סינון רכישות בכסף או מנויים
+                if "$" in txt or "MONTH" in txt:
+                    continue
+                
+                # 3. סינון Milestones נעולים לפי הטקסט שמתחת לכפתור (כמו שראינו ב-claim_14.jpg)
+                # אנחנו בודקים את הטקסט של ה-Container שעוטף את הכפתור
+                parent_text = btn.locator("xpath=..").inner_text().upper()
+                if "MORE MARKET POINTS" in parent_text or "GET" in parent_text and "POINTS" in parent_text:
+                    continue
+
+                if btn.is_visible():
                     target_btn = btn
                     break
             except: continue
         
         if not target_btn:
-            print("No more items to claim.")
+            print("No more valid items to claim.")
             break
 
         try:
@@ -102,14 +118,15 @@ def claim_rewards(page):
             target_btn.click(force=True)
             page.wait_for_timeout(5000)
             
+            # בדיקת ניתוק סשן פתאומי
             if page.get_by_text("LOGIN WITH KABAM").first.is_visible():
-                print("Auth popup detected.")
+                print("Auth popup detected - stopping.")
                 return "AUTH_FAILED"
 
             page.keyboard.press("Escape")
             page.wait_for_timeout(2000)
             claimed += 1
-            save_debug_info(page, f"claim_{claimed}")
+            save_debug_info(page, f"claimed_{claimed}")
         except:
             break
 
@@ -120,10 +137,14 @@ def claim_rewards(page):
     return "SUCCESS"
 
 def run():
-    if not EMAIL or not PASSWORD: return
+    if not EMAIL or not PASSWORD:
+        print("Missing credentials!")
+        return
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
+        
+        # לוגין ראשוני אם אין קובץ סשן
         if not os.path.exists(SESSION_FILE):
             login_and_save(browser)
 
@@ -135,8 +156,9 @@ def run():
             page.goto(STORE_URL, wait_until="networkidle")
             page.wait_for_timeout(5000)
             
+            # בדיקה אם באמת מחוברים (למקרה שהסשן בקובץ פג)
             if not check_auth(page):
-                print("Not logged in. Re-logging...")
+                print("Session expired. Re-logging...")
                 context.close()
                 login_and_save(browser)
                 context = browser.new_context(viewport={"width": 1280, "height": 720}, storage_state=SESSION_FILE)
@@ -147,6 +169,7 @@ def run():
             claim_rewards(page)
             
         except Exception as e:
+            print(f"Runtime error: {e}")
             send_telegram_msg(f"⚠️ Error: {str(e)[:100]}")
         finally:
             browser.close()
