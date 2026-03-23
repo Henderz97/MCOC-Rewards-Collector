@@ -29,7 +29,6 @@ def save_debug_info(page, name):
 def check_auth(page):
     """בדיקת לוגין בטוחה ללא Strict Mode Violation"""
     try:
-        # משתמשים ב-first כדי למנוע שגיאת strict אם יש כמה אלמנטים
         if page.get_by_text("LOG IN").first.is_visible():
             return False
         is_auth = page.get_by_role("button", name="CART").first.is_visible() or \
@@ -62,7 +61,6 @@ def claim_rewards(page):
     print("Scanning for rewards...")
     page.wait_for_load_state("networkidle")
     
-    # סגירת קוקיז
     try:
         cookie_btn = page.get_by_role("button", name="ACCEPT ALL").first
         if cookie_btn.is_visible():
@@ -78,8 +76,8 @@ def claim_rewards(page):
     max_attempts = 15
     
     while claimed < max_attempts:
-        # חיפוש כפתורים בצורה שלא קורסת ב-Strict Mode
-        selector = "button:has-text('FREE'), button:has-text('GET')"
+        # עדכון הסלקטור: הוספנו חיפוש למילה CLAIM
+        selector = "button:has-text('FREE'), button:has-text('GET'), button:has-text('CLAIM')"
         buttons = page.locator(selector)
         count = buttons.count()
         
@@ -88,6 +86,7 @@ def claim_rewards(page):
             btn = buttons.nth(i)
             try:
                 txt = btn.inner_text().upper()
+                # מוודא שזה לא כפתור רכישה (שמכיל $) ולא מינוי חודשי
                 if "$" not in txt and "MONTH" not in txt and btn.is_visible():
                     target_btn = btn
                     break
@@ -103,7 +102,6 @@ def claim_rewards(page):
             target_btn.click(force=True)
             page.wait_for_timeout(5000)
             
-            # בדיקה אם קפץ לוגין כתום באמצע
             if page.get_by_text("LOGIN WITH KABAM").first.is_visible():
                 print("Auth popup detected.")
                 return "AUTH_FAILED"
