@@ -30,144 +30,139 @@ def save_debug_info(page, name):
         print(f"DEBUG: Failed to save screenshot {name}: {e}")
 
 def check_auth(page):
+    """Returns True if logged in, False if 'LOGIN' button is visible."""
     try:
-        if page.get_by_text("LOG IN").first.is_visible():
+        # Check the top nav login button
+        nav_login = page.locator("button:has-text('LOGIN')").first
+        if nav_login.is_visible():
             return False
-        is_auth = page.get_by_role("button", name="CART").first.is_visible() or \
-                  page.locator("[class*='player-name']").first.is_visible()
-        return is_auth
+        # If we see 'CART' or a player name element, we are in
+        return page.locator("[class*='player-name']").first.is_visible() or \
+               page.get_by_role("button", name="CART").first.is_visible()
     except:
         return False
 
 def login_and_save(browser):
-    print("ACTION: Starting fresh login...")
+    print("ACTION: Starting human-like login flow...")
     context = browser.new_context(viewport={"width": 1280, "height": 720})
     page = context.new_page()
     try:
         page.goto(XSOLLA_AUTH_URL, wait_until="networkidle", timeout=60000)
+        
+        # Wait for fields
         page.wait_for_selector('input[type="email"]', timeout=30000)
+        
+        # Human-like interaction
+        page.click('input[type="email"]')
         page.fill('input[type="email"]', EMAIL)
+        time.sleep(1)
+        
+        page.click('input[type="password"]')
         page.fill('input[type="password"]', PASSWORD)
-        page.keyboard.press("Enter")
+        time.sleep(1)
         
+        # Click the actual Login button instead of just Enter
+        # Xsolla usually has a button with text 'Log in' or 'Sign in'
+        login_button = page.locator("button:has-text('LOG IN'), button:has-text('SIGN IN')").first
+        login_button.click()
+        
+        # Wait for the store to load after redirect
         page.wait_for_url(re.compile(r"store\.playcontestofchampions"), timeout=60000)
-        time.sleep(10) 
+        print("ACTION: Redirected back to store. Waiting for session to settle...")
+        time.sleep(12) 
         
-        save_debug_info(page, "1_login_success_verification")
-        context.storage_state(path=SESSION_FILE)
-        print("SUCCESS: Session saved.")
+        if check_auth(page):
+            print("SUCCESS: Login verified!")
+            save_debug_info(page, "1_login_verified_final")
+            context.storage_state(path=SESSION_FILE)
+        else:
+            print("FAILURE: Redirected but 'LOGIN' button still visible.")
+            save_debug_info(page, "ERROR_redirect_but_no_auth")
+            
     except Exception as e:
-        save_debug_info(page, "ERROR_login_failed")
+        save_debug_info(page, "ERROR_login_crash")
         raise e
     finally:
         context.close()
 
 def claim_rewards(page):
     print("ACTION: Scanning for rewards...")
-    page.wait_for_load_state("networkidle")
-    time.sleep(8) # Wait for rewards to load
-    
+    time.sleep(8) 
     save_debug_info(page, "2_pre_scan_view")
 
-    try:
-        cookie_btn = page.get_by_role("button", name="ACCEPT ALL").first
-        if cookie_btn.is_visible():
-            cookie_btn.click()
-            time.sleep(2)
-    except: pass
-
-    # Scroll to reveal all items
-    for i in range(8):
+    # Scroll heavily to load everything
+    for i in range(10):
         page.evaluate("window.scrollBy(0, 1000)")
-        time.sleep(0.8)
-
-    save_debug_info(page, "3_after_scrolling_view")
+        time.sleep(0.5)
 
     claimed = 0
-    selector = "button:has-text('FREE'), button:has-text('GET'), button:has-text('CLAIM'), [role='button']:has-text('FREE')"
+    # Update selector to include 'LOGIN' buttons that should be 'CLAIM'
+    selector = "button:has-text('FREE'), button:has-text('GET'), button:has-text('CLAIM')"
     
-    while claimed < 15:
-        buttons = page.locator(selector)
-        count = buttons.count()
-        print(f"DEBUG: Found {count} potential buttons...")
+    buttons = page.locator(selector)
+    count = buttons.count()
+    print(f"DEBUG: Found {count} items matching criteria.")
 
-        target_btn = None
-        for i in range(count):
-            btn = buttons.nth(i)
-            try:
-                if not btn.is_visible(): continue
-                
-                txt = btn.inner_text().upper()
-                parent_txt = btn.locator("xpath=..").inner_text().upper()
-
-                if "$" in txt or "UNIT" in txt or "MONTH" in txt: continue
-                if "MORE MARKET POINTS" in parent_txt: continue
-
-                target_btn = btn
-                break
-            except: continue
-
-        if not target_btn:
-            print("INFO: No valid claimable items found.")
-            save_debug_info(page, "4_final_scan_nothing_left")
-            break
-
+    for i in range(count):
+        btn = buttons.nth(i)
         try:
+            if not btn.is_visible(): continue
+            txt = btn.inner_text().upper()
+            
+            # If the button STILL says LOGIN, the whole session failed
+            if "LOGIN" in txt:
+                print(f"DEBUG: Button {i} says LOGIN. Authentication failed.")
+                continue
+
+            if "$" in txt or "UNIT" in txt: continue
+
             print(f"ACTION: Claiming item #{claimed+1}...")
-            target_btn.scroll_into_view_if_needed()
-            time.sleep(1)
-            target_btn.click(force=True)
-            time.sleep(6)
+            btn.scroll_into_view_if_needed()
+            btn.click(force=True)
+            time.sleep(5)
             
             claimed += 1
-            save_debug_info(page, f"5_claimed_item_{claimed}")
-            
+            save_debug_info(page, f"claimed_{claimed}")
             page.keyboard.press("Escape")
             time.sleep(2)
-        except Exception as e:
-            print(f"ERROR: Claiming failed: {e}")
-            break
+        except: continue
 
     if claimed > 0:
         send_telegram_msg(f"✅ Successfully claimed {claimed} rewards!")
     else:
-        send_telegram_msg("👀 No rewards found. Check debug screenshots.")
+        print("INFO: No rewards claimed.")
     return claimed
 
 def run():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         
+        # If no session, or session is invalid, log in
         if not os.path.exists(SESSION_FILE):
-            print("INFO: No session file. Logging in...")
             login_and_save(browser)
 
         context = browser.new_context(storage_state=SESSION_FILE, viewport={"width": 1280, "height": 720})
         page = context.new_page()
         
         try:
-            print("ACTION: Navigating to Store...")
             page.goto(STORE_URL, wait_until="networkidle")
-            time.sleep(6)
+            time.sleep(8)
 
             if not check_auth(page):
-                print("WARNING: Session expired. Refreshing...")
-                save_debug_info(page, "0_session_expired_fallback")
+                print("WARNING: Session invalid. Retrying login...")
                 context.close()
                 login_and_save(browser)
                 context = browser.new_context(storage_state=SESSION_FILE, viewport={"width": 1280, "height": 720})
                 page = context.new_page()
                 page.goto(STORE_URL, wait_until="networkidle")
-                time.sleep(6)
+                time.sleep(8)
 
             claim_rewards(page)
             
         except Exception as e:
             print(f"CRITICAL: {e}")
-            save_debug_info(page, "ERROR_critical_runtime")
         finally:
             browser.close()
-            print("INFO: Process complete.")
 
 if __name__ == "__main__":
     run()
