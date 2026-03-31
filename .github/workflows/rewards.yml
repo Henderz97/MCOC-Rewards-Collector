@@ -1,55 +1,118 @@
 name: MCOC Rewards Collector
 
+
+
 on:
+
   schedule:
+
+    # 05:00 UTC זה 08:00 בבוקר שעון ישראל
+
     - cron: '0 4 * * *'
+
   workflow_dispatch:
 
+
+
 jobs:
+
   build:
+
     runs-on: ubuntu-latest
+
     
+
     steps:
+
       - name: Checkout code
+
         uses: actions/checkout@v4
 
+
+
       - name: Set up Python
+
         uses: actions/setup-python@v4
+
         with:
+
           python-version: '3.11'
 
+
+
       - name: Install dependencies
+
         run: |
+
           pip install playwright requests
+
           playwright install chromium
 
+
+
       - name: Restore Session Cache
+
         uses: actions/cache@v3
+
         with:
+
           path: kabam_session.json
-          key: ${{ runner.os }}-kabam-session-${{ github.run_id }}
+
+          key: ${{ runner.os }}-kabam-session-${{ hashFiles('**/Collect_Rewards.py') }}
+
           restore-keys: |
+
             ${{ runner.os }}-kabam-session-
 
+
+
       - name: Run Collector
+
         env:
+
           KABAM_EMAIL: ${{ secrets.KABAM_EMAIL }}
+
           KABAM_PASSWORD: ${{ secrets.KABAM_PASSWORD }}
+
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
         run: python Collect_Rewards.py
 
+
+
       - name: Upload All Logs and Debug Info
+
         if: always()
+
         uses: actions/upload-artifact@v4
+
         with:
+
           name: mcoc-full-debug-pack
-          path: ./*.png
+
+          path: |
+
+            *.png
+
+            *.html
+
+            *.json
+
           retention-days: 3
 
+
+
       - name: Save Session Cache
+
         if: always()
+
         uses: actions/cache/save@v3
+
         with:
+
           path: kabam_session.json
-          key: ${{ runner.os }}-kabam-session-${{ github.run_id }}
+
+          key: ${{ runner.os }}-kabam-session-${{ hashFiles('**/Collect_Rewards.py') }}
+
