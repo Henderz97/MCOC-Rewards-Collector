@@ -6,6 +6,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -19,15 +20,6 @@ jobs:
         run: |
           pip install playwright requests
           playwright install chromium
-          playwright install-deps chromium
-
-      - name: Restore Session Cache
-        uses: actions/cache@v3
-        with:
-          path: kabam_session.json
-          key: ${{ runner.os }}-kabam-session-${{ hashFiles('**/Collect_Rewards.py') }}
-          restore-keys: |
-            ${{ runner.os }}-kabam-session-
 
       - name: Run Collector
         env:
@@ -37,18 +29,14 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python Collect_Rewards.py
 
-      - name: Upload Debug Artifacts
+      - name: Upload All Logs and Debug Info
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mcoc-full-debug-pack
-          path: ./debug/
-          if-no-files-found: warn
+          path: |
+            debug/
+            *.png
+            *.html
+            *.json
           retention-days: 3
-
-      - name: Save Session Cache
-        if: always()
-        uses: actions/cache/save@v3
-        with:
-          path: kabam_session.json
-          key: ${{ runner.os }}-kabam-session-${{ hashFiles('**/Collect_Rewards.py') }}
