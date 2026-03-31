@@ -27,9 +27,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: kabam_session.json
-          # We use run_id to ensure a unique key for every run
           key: ${{ runner.os }}-kabam-session-${{ github.run_id }}
-          # This allows it to find the MOST RECENT session from any previous run
           restore-keys: |
             ${{ runner.os }}-kabam-session-
 
@@ -46,10 +44,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: mcoc-full-debug-pack
-          path: |
-            *.png
-            *.html
-            *.json
+          path: ./*.png
           retention-days: 3
 
       - name: Save Session Cache
@@ -57,5 +52,4 @@ jobs:
         uses: actions/cache/save@v3
         with:
           path: kabam_session.json
-          # Use the same unique key as the restore step
           key: ${{ runner.os }}-kabam-session-${{ github.run_id }}
