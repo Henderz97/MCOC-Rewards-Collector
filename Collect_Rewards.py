@@ -49,7 +49,6 @@ def save_html(page, name):
 def dismiss_cookies(page):
     try:
         for label in ["ACCEPT ALL", "ACCEPT", "Accept All", "Accept"]:
-            # cookies may be a button or span
             for tag in ["button", "span"]:
                 el = page.locator(f"{tag}:has-text('{label}')").first
                 if el.is_visible():
@@ -65,17 +64,17 @@ def login(page):
     print("[LOGIN] Navigating to store...")
     page.goto(STORE_URL, wait_until="domcontentloaded", timeout=60000)
 
-    # Wait for the JS app to render — specifically wait for the LOGIN span to appear
-    print("[LOGIN] Waiting for store to render LOGIN button...")
-    page.wait_for_selector("span.button-login", timeout=30000)
-    page.wait_for_timeout(1000)
+    # Wait for the JS app to render — wait for element to exist in DOM (not necessarily visible)
+    print("[LOGIN] Waiting for store JS to render...")
+    page.wait_for_selector("span.button-login", state="attached", timeout=30000)
+    page.wait_for_timeout(2000)
     dismiss_cookies(page)
     save_debug_info(page, "login_01_store")
     save_html(page, "login_01_store")
 
-    # Click the top nav LOGIN span (class="primary-button button-login")
-    print("[LOGIN] Clicking LOGIN button...")
-    page.locator("span.button-login").first.click()
+    # There are 2 button-login spans (desktop + mobile nav), click the first one using JS
+    print("[LOGIN] Clicking LOGIN button via JS...")
+    page.evaluate("document.querySelector('span.button-login').click()")
 
     # Wait for redirect to kid.kabam.com
     print("[LOGIN] Waiting for redirect to kid.kabam.com...")
@@ -88,7 +87,7 @@ def login(page):
 
     # Fill credentials
     print("[LOGIN] Filling credentials...")
-    page.wait_for_selector('input[type="email"], input[name="email"]', timeout=20000)
+    page.wait_for_selector('input[type="email"]', state="visible", timeout=20000)
     page.fill('input[type="email"]', EMAIL)
     page.wait_for_timeout(300)
     page.fill('input[type="password"]', PASSWORD)
@@ -128,12 +127,9 @@ def claim_rewards(page):
     save_debug_info(page, "store_after_scroll")
     save_html(page, "store_after_scroll")
 
-    # Free items have class "item-action-free" on their action container
-    # The clickable element inside is a span.primary-button
-    # After login these should show GET/CLAIM/FREE instead of LOGIN
-    # Log what we see for diagnosis
+    # Log all free item actions and their button text for diagnosis
     free_actions = page.locator(".item-action-free")
-    print(f"[CLAIM] Found {free_actions.count()} free item action(s).")
+    print(f"[CLAIM] Found {free_actions.count()} free item action container(s).")
     for i in range(free_actions.count()):
         try:
             txt = free_actions.nth(i).inner_text().strip()
@@ -145,7 +141,6 @@ def claim_rewards(page):
     max_attempts = 20
 
     while claimed < max_attempts:
-        # Target the clickable span inside free item actions
         free_btns = page.locator(".item-action-free span.primary-button")
         count = free_btns.count()
         print(f"[CLAIM] Found {count} free item button(s).")
@@ -156,43 +151,48 @@ def claim_rewards(page):
             break
 
         target_btn = None
+        target_index = -1
         for i in range(count):
             btn = free_btns.nth(i)
             try:
-                if not btn.is_visible():
-                    continue
                 txt = btn.inner_text().strip().upper()
-                print(f"[CLAIM]   Checking free button #{i}: '{txt}'")
-                # Skip if still showing LOGIN (means not logged in properly)
-                # Skip if disabled
+                print(f"[CLAIM]   Button #{i}: '{txt}'")
                 if "LOGIN" in txt:
-                    print(f"[CLAIM]   → Still showing LOGIN, skipping")
+                    print(f"[CLAIM]   → Still LOGIN, not logged in properly")
                     continue
                 target_btn = btn
+                target_index = i
                 print(f"[CLAIM]   → Selected")
                 break
             except:
                 continue
 
         if not target_btn:
-            print("[CLAIM] No claimable free items found (all may be LOGIN or already claimed).")
+            print("[CLAIM] No claimable items (all showing LOGIN or empty).")
             save_debug_info(page, f"store_done_after_{claimed}_claims")
             break
 
         try:
-            print(f"[CLAIM] Clicking item #{claimed + 1}...")
+            print(f"[CLAIM] Claiming item #{claimed + 1} (index {target_index})...")
             target_btn.scroll_into_view_if_needed()
             page.wait_for_timeout(500)
             save_debug_info(page, f"claim_{claimed + 1}_before")
+
+            # Click via JS to avoid visibility issues
+            page.evaluate(
+                "els => els[arguments[0]].click()",
+                [page.locator(".item-action-free span.primary-button"), target_index]
+            )
+            # Fallback to direct click
             target_btn.click(force=True)
+
             page.wait_for_timeout(6000)
             save_debug_info(page, f"claim_{claimed + 1}_after")
             save_html(page, f"claim_{claimed + 1}_after")
 
-            # Dismiss any popup
+            # Dismiss popup
             for close_label in ["CLOSE", "OK", "COLLECT", "CONFIRM", "DONE"]:
                 try:
-                    # Try both span and button
                     for tag in ["span", "button"]:
                         el = page.locator(f"{tag}:has-text('{close_label}')").first
                         if el.is_visible():
@@ -239,15 +239,20 @@ def run():
         try:
             login(page)
 
-            # Verify login — button-login span should be gone, replaced by user info
+            # Verify login succeeded — button-login should be gone
             page.wait_for_timeout(2000)
-            login_still_visible = page.locator("span.button-login").count() > 0
-            print(f"[RUN] Login button still visible: {login_still_visible}")
+            login_btn_count = page.locator("span.button-login").count()
+            print(f"[RUN] button-login spans still present: {login_btn_count}")
             save_debug_info(page, "auth_check")
+            save_html(page, "auth_check")
 
-            if login_still_visible:
-                send_telegram_msg("⚠️ Login failed — store still shows LOGIN button.")
-                return
+            if login_btn_count > 0:
+                # Check if the text changed from LOGIN to something else (logged-in state)
+                btn_text = page.locator("span.button-login").first.inner_text().strip()
+                print(f"[RUN] button-login text: '{btn_text}'")
+                if "LOGIN" in btn_text.upper():
+                    send_telegram_msg("⚠️ Login failed — store still shows LOGIN button.")
+                    return
 
             context.storage_state(path=SESSION_FILE)
             print("[RUN] Session saved.")
