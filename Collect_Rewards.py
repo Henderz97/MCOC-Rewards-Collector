@@ -9,7 +9,6 @@ EMAIL = os.getenv("KABAM_EMAIL")
 PASSWORD = os.getenv("KABAM_PASSWORD")
 SESSION_FILE = "kabam_session.json"
 STORE_URL = "https://store.playcontestofchampions.com/"
-XSOLLA_AUTH_URL = "https://login.xsolla.com/api/social/kabam/login_redirect?projectId=2c9de8c3-c57c-4bfe-83e6-20416f767517&login_url=https%3A%2F%2Fstore.playcontestofchampions.com&payload=%7B%7D&locale=en_US&trackId=&login_url=https%3A%2F%2Flogin-widget.xsolla.com%2Flatest%2Fsocial-auth-succeed%3FprojectId%3D2c9de8c3-c57c-4bfe-83e6-20416f767517%26callbackUrl%3Dhttps%3A%2F%2Fstore.playcontestofchampions.com"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -60,108 +59,248 @@ def dismiss_cookies(page):
         pass
 
 
-def check_auth(page):
-    """Returns True if the store shows a logged-in state."""
+def check_logged_in(page):
+    """Check if the store now shows us as logged in (no top-level LOGIN button)."""
     try:
-        # Look for LOGIN buttons — if they exist, we're logged out
-        login_buttons = page.locator("a:has-text('LOGIN'), button:has-text('LOGIN'), button:has-text('LOG IN')")
-        count = login_buttons.count()
-        print(f"[AUTH] Found {count} LOGIN button(s) on page")
-        if count > 0:
+        # After login the top nav LOGIN button disappears
+        top_login = page.locator("header button:has-text('LOGIN'), nav button:has-text('LOGIN'), header a:has-text('LOGIN')").first
+        if top_login.is_visible():
+            print("[AUTH] Top nav LOGIN button still visible — not logged in.")
             return False
+        print("[AUTH] No top nav LOGIN button — appears logged in.")
         return True
     except Exception as e:
-        print(f"[AUTH] check_auth error: {e}")
+        print(f"[AUTH] check_logged_in error: {e}")
         return False
+
+
+def login(page):
+    """Click the store LOGIN button and complete the kid.kabam.com OAuth flow."""
+    print("[LOGIN] Navigating to store...")
+    page.goto(STORE_URL, wait_until="domcontentloaded", timeout=60000)
+    page.wait_for_timeout(3000)
+    dismiss_cookies(page)
+    save_debug_info(page, "login_01_store")
+    save_html(page, "login_01_store")
+    print(f"[LOGIN] Store URL: {page.url}")
+
+    # Log all buttons visible on the store for diagnosis
+    all_btns = page.locator("button")
+    print(f"[LOGIN] Buttons on store page: {all_btns.count()}")
+    for i in range(min(all_btns.count(), 20)):
+        try:
+            print(f"[LOGIN]   btn #{i}: '{all_btns.nth(i).inner_text().strip()}'")
+        except:
+            pass
+
+    # Click the top-level LOGIN button (not an item button)
+    print("[LOGIN] Looking for top-level LOGIN button...")
+    # Try several selectors for the main login button
+    login_clicked = False
+    for selector in [
+        "header button:has-text('LOGIN')",
+        "nav button:has-text('LOGIN')",
+        "header a:has-text('LOGIN')",
+        "nav a:has-text('LOGIN')",
+        ".header button:has-text('LOGIN')",
+        ".nav button:has-text('LOGIN')",
+        "button:has-text('LOG IN')",
+        "a:has-text('LOG IN')",
+    ]:
+        try:
+            btn = page.locator(selector).first
+            if btn.is_visible():
+                print(f"[LOGIN] Found login button with selector: {selector}")
+                btn.click()
+                login_clicked = True
+                break
+        except:
+            continue
+
+    if not login_clicked:
+        # Fallback: click the very first LOGIN button/link on the page
+        print("[LOGIN] No header LOGIN found, trying first LOGIN element on page...")
+        try:
+            btn = page.locator("button:has-text('LOGIN'), a:has-text('LOGIN')").first
+            btn.click()
+            login_clicked = True
+        except Exception as e:
+            print(f"[LOGIN] Could not find any LOGIN button: {e}")
+            save_debug_info(page, "login_no_button_found")
+            save_html(page, "login_no_button_found")
+            raise Exception("Could not find LOGIN button on store page")
+
+    # Wait for redirect to kid.kabam.com
+    print("[LOGIN] Waiting for redirect to kid.kabam.com...")
+    page.wait_for_url(re.compile(r"kid\.kabam\.com"), timeout=30000)
+    page.wait_for_load_state("domcontentloaded")
+    page.wait_for_timeout(2000)
+    print(f"[LOGIN] At kid.kabam.com: {page.url}")
+    save_debug_info(page, "login_02_kabam")
+    save_html(page, "login_02_kabam")
+
+    # Fill credentials
+    print("[LOGIN] Filling credentials...")
+    page.wait_for_selector('input[type="email"], input[name="email"], input[name="username"]', timeout=20000)
+
+    # Try email field
+    for email_selector in ['input[type="email"]', 'input[name="email"]', 'input[name="username"]']:
+        try:
+            if page.locator(email_selector).first.is_visible():
+                page.fill(email_selector, EMAIL)
+                print(f"[LOGIN] Filled email with selector: {email_selector}")
+                break
+        except:
+            continue
+
+    page.wait_for_timeout(300)
+
+    # Try password field
+    for pwd_selector in ['input[type="password"]', 'input[name="password"]']:
+        try:
+            if page.locator(pwd_selector).first.is_visible():
+                page.fill(pwd_selector, PASSWORD)
+                print(f"[LOGIN] Filled password with selector: {pwd_selector}")
+                break
+        except:
+            continue
+
+    page.wait_for_timeout(300)
+    save_debug_info(page, "login_03_filled")
+
+    # Submit
+    print("[LOGIN] Submitting...")
+    submitted = False
+    for btn_selector in [
+        'button[type="submit"]',
+        "button:has-text('Login')",
+        "button:has-text('Sign In')",
+        "button:has-text('SIGN IN')",
+        "button:has-text('Continue')",
+    ]:
+        try:
+            btn = page.locator(btn_selector).first
+            if btn.is_visible():
+                btn.click()
+                submitted = True
+                print(f"[LOGIN] Submitted with: {btn_selector}")
+                break
+        except:
+            continue
+
+    if not submitted:
+        page.keyboard.press("Enter")
+        print("[LOGIN] Submitted with Enter key")
+
+    # Wait for redirect back to store
+    print("[LOGIN] Waiting for redirect back to store...")
+    page.wait_for_url(re.compile(r"store\.playcontestofchampions"), timeout=90000)
+    page.wait_for_load_state("domcontentloaded")
+    page.wait_for_timeout(5000)
+    print(f"[LOGIN] Back at store: {page.url}")
+
+    dismiss_cookies(page)
+    page.wait_for_timeout(2000)
+
+    save_debug_info(page, "login_04_post_redirect")
+    save_html(page, "login_04_post_redirect")
 
 
 def claim_rewards(page):
     print("[CLAIM] Starting reward scan...")
     page.wait_for_load_state("domcontentloaded")
-    dismiss_cookies(page)
 
     # Scroll to load all lazy elements
-    for i in range(12):
+    for i in range(15):
         page.evaluate("window.scrollBy(0, 800)")
-        time.sleep(0.4)
+        time.sleep(0.3)
     page.evaluate("window.scrollTo(0, 0)")
-    page.wait_for_timeout(1000)
+    page.wait_for_timeout(2000)
 
     save_debug_info(page, "store_after_scroll")
     save_html(page, "store_after_scroll")
 
+    # Log ALL buttons for diagnosis
+    all_buttons = page.locator("button")
+    total = all_buttons.count()
+    print(f"[CLAIM] Total buttons on page: {total}")
+    for i in range(min(total, 40)):
+        try:
+            txt = all_buttons.nth(i).inner_text().strip()
+            visible = all_buttons.nth(i).is_visible()
+            print(f"[CLAIM]   Button #{i}: '{txt}' visible={visible}")
+        except:
+            pass
+
     claimed = 0
-    max_attempts = 15
+    max_attempts = 20
 
     while claimed < max_attempts:
-        # Find all free/claim buttons
-        selector = "button:has-text('FREE'), button:has-text('CLAIM')"
+        # After login, free items should show GET / FREE / CLAIM buttons
+        selector = "button:has-text('GET'), button:has-text('FREE'), button:has-text('CLAIM')"
         buttons = page.locator(selector)
         count = buttons.count()
-        print(f"[CLAIM] Found {count} FREE/CLAIM buttons.")
+        print(f"[CLAIM] Found {count} claimable button(s).")
 
-        # Also log all LOGIN buttons for context
-        login_count = page.locator("button:has-text('LOGIN'), a:has-text('LOGIN')").count()
-        print(f"[CLAIM] Found {login_count} LOGIN buttons (items needing purchase/auth).")
+        if count == 0:
+            print("[CLAIM] No claimable buttons found.")
+            save_debug_info(page, f"store_done_after_{claimed}_claims")
+            break
 
         target_btn = None
         for i in range(count):
             btn = buttons.nth(i)
             try:
-                if not btn.is_enabled() or not btn.is_visible():
+                if not btn.is_visible() or not btn.is_enabled():
                     continue
-
                 txt = btn.inner_text().strip().upper()
-                print(f"[CLAIM] Checking button #{i}: '{txt}'")
-
-                if "$" in txt or "MONTH" in txt:
-                    print(f"[CLAIM]   → Skipping (paid)")
+                if "$" in txt or "€" in txt or "£" in txt:
                     continue
-
-                parent_text = ""
-                try:
-                    parent_text = btn.locator("xpath=ancestor::*[3]").inner_text().upper()
-                except:
-                    pass
-
-                if "MORE MARKET POINTS" in parent_text or ("GET" in parent_text and "POINTS" in parent_text):
-                    print(f"[CLAIM]   → Skipping (milestone gate)")
-                    continue
-
                 target_btn = btn
-                print(f"[CLAIM]   → Selected as target")
+                print(f"[CLAIM] Targeting button #{i}: '{txt}'")
                 break
-            except Exception as e:
-                print(f"[CLAIM]   → Error: {e}")
+            except:
                 continue
 
         if not target_btn:
-            print("[CLAIM] No more claimable items found.")
+            print("[CLAIM] No valid target found.")
             save_debug_info(page, f"store_done_after_{claimed}_claims")
             break
 
         try:
-            print(f"[CLAIM] Clicking item #{claimed + 1}...")
+            print(f"[CLAIM] Claiming item #{claimed + 1}...")
             target_btn.scroll_into_view_if_needed()
             page.wait_for_timeout(500)
             save_debug_info(page, f"claim_{claimed + 1}_before")
             target_btn.click(force=True)
-            page.wait_for_timeout(5000)
+            page.wait_for_timeout(6000)
             save_debug_info(page, f"claim_{claimed + 1}_after")
+            save_html(page, f"claim_{claimed + 1}_after")
 
-            # Dismiss any confirmation/result popup
+            # Dismiss popup
+            for close_label in ["CLOSE", "OK", "COLLECT", "CONFIRM", "DONE"]:
+                try:
+                    close_btn = page.get_by_role("button", name=close_label).first
+                    if close_btn.is_visible():
+                        close_btn.click()
+                        page.wait_for_timeout(1000)
+                        print(f"[CLAIM] Dismissed popup with '{close_label}'")
+                        break
+                except:
+                    pass
+
             page.keyboard.press("Escape")
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(2000)
             claimed += 1
 
         except Exception as e:
-            print(f"[CLAIM] Click error: {e}")
+            print(f"[CLAIM] Error on item #{claimed + 1}: {e}")
             save_debug_info(page, f"claim_error_{claimed}")
             break
 
-    msg = f"✅ Claimed {claimed} rewards!" if claimed > 0 else "👀 No claimable rewards found today."
+    msg = f"✅ Claimed {claimed} rewards!" if claimed > 0 else "👀 No free rewards to claim today."
     send_telegram_msg(msg)
-    print(f"[CLAIM] Done. {msg}")
+    print(f"[CLAIM] {msg}")
 
 
 def run():
@@ -178,7 +317,6 @@ def run():
             args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
         )
 
-        # Use ONE context for the entire flow — login + store in the same session
         context = browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -186,65 +324,23 @@ def run():
         page = context.new_page()
 
         try:
-            # Step 1: Go to the Xsolla/Kabam login page
-            print("[RUN] Navigating to auth URL...")
-            page.goto(XSOLLA_AUTH_URL, wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(2000)
-            save_debug_info(page, "login_01_loaded")
-            save_html(page, "login_01_loaded")
-            print(f"[RUN] URL after auth nav: {page.url}")
+            # Login via the store's own LOGIN button → kid.kabam.com flow
+            login(page)
 
-            # Step 2: Fill credentials
-            print("[RUN] Waiting for email input...")
-            page.wait_for_selector('input[type="email"]', timeout=30000)
-            page.fill('input[type="email"]', EMAIL)
-            page.wait_for_timeout(300)
-            page.fill('input[type="password"]', PASSWORD)
-            page.wait_for_timeout(300)
-            save_debug_info(page, "login_02_filled")
-
-            # Step 3: Submit
-            print("[RUN] Submitting login form...")
-            try:
-                page.get_by_role("button", name="Login").click()
-            except:
-                page.keyboard.press("Enter")
-
-            # Step 4: Wait for redirect back to store
-            print("[RUN] Waiting for store redirect...")
-            page.wait_for_url(re.compile(r"store\.playcontestofchampions"), timeout=90000)
-            page.wait_for_load_state("domcontentloaded")
-            page.wait_for_timeout(6000)  # Extra wait for auth cookies to settle
-            print(f"[RUN] Redirected to: {page.url}")
-
-            dismiss_cookies(page)
-            page.wait_for_timeout(2000)
-
-            save_debug_info(page, "login_03_post_redirect")
-            save_html(page, "login_03_post_redirect")
-
-            # Step 5: Verify auth in the SAME context/page
-            is_auth = check_auth(page)
+            # Verify login worked
+            is_auth = check_logged_in(page)
             print(f"[RUN] Auth check: {is_auth}")
-            save_debug_info(page, "login_04_auth_check")
+            save_debug_info(page, "auth_check")
 
             if not is_auth:
-                print("[RUN] Still not authenticated after login. Aborting.")
-                send_telegram_msg("⚠️ Login failed — still logged out after redirect. Check debug screenshots.")
+                send_telegram_msg("⚠️ Login failed — store still shows logged out.")
                 return
 
-            # Step 6: Save session for potential future use
+            # Save session
             context.storage_state(path=SESSION_FILE)
             print("[RUN] Session saved.")
 
-            # Step 7: Claim rewards on the same page/context
-            print("[RUN] Proceeding to claim rewards...")
-            # Navigate to store root to ensure clean state
-            page.goto(STORE_URL, wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(3000)
-            dismiss_cookies(page)
-            save_debug_info(page, "store_01_loaded")
-
+            # Claim rewards on current page (already at store after redirect)
             claim_rewards(page)
 
         except Exception as e:
