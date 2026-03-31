@@ -9,6 +9,7 @@ EMAIL = os.getenv("KABAM_EMAIL")
 PASSWORD = os.getenv("KABAM_PASSWORD")
 SESSION_FILE = "kabam_session.json"
 STORE_URL = "https://store.playcontestofchampions.com/"
+# Xsolla Auth URL is used for the initial login redirect
 XSOLLA_AUTH_URL = "https://login.xsolla.com/api/social/kabam/login_redirect?projectId=2c9de8c3-c57c-4bfe-83e6-20416f767517&login_url=https%3A%2F%2Fstore.playcontestofchampions.com&payload=%7B%7D&locale=en_US&trackId=&login_url=https%3A%2F%2Flogin-widget.xsolla.com%2Flatest%2Fsocial-auth-succeed%3FprojectId%3D2c9de8c3-c57c-4bfe-83e6-20416f767517%26callbackUrl%3Dhttps%3A%2F%2Fstore.playcontestofchampions.com"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -27,10 +28,13 @@ def save_debug_info(page, name):
     except: pass
 
 def check_auth(page):
-    """בדיקת לוגין בטוחה ללא Strict Mode Violation"""
+    """Checks if the user is logged in by looking for the CART button or player name."""
     try:
+        # If 'LOG IN' is visible, we are definitely not authenticated
         if page.get_by_text("LOG IN").first.is_visible():
             return False
+        
+        # Check for elements that only appear when logged in
         is_auth = page.get_by_role("button", name="CART").first.is_visible() or \
                   page.locator("[class*='player-name']").first.is_visible()
         return is_auth
@@ -38,6 +42,7 @@ def check_auth(page):
         return False
 
 def login_and_save(browser):
+    """Performs a full login flow and saves the session to a JSON file."""
     print("Starting fresh login...")
     context = browser.new_context(viewport={"width": 1280, "height": 720})
     page = context.new_page()
@@ -47,12 +52,17 @@ def login_and_save(browser):
         page.fill('input[type="email"]', EMAIL)
         page.fill('input[type="password"]', PASSWORD)
         page.keyboard.press("Enter")
+        
+        # Wait for the redirect back to the store
         page.wait_for_url(re.compile(r"store\.playcontestofchampions"), timeout=60000)
         page.wait_for_timeout(7000) 
+        
+        # Save the authentication state (cookies, local storage)
         context.storage_state(path=SESSION_FILE)
-        print("Login success.")
+        print(f"Login success. Session saved to {SESSION_FILE}")
     except Exception as e:
         save_debug_info(page, "login_fail")
+        print(f"Login failed: {e}")
         raise e
     finally:
         context.close()
@@ -61,7 +71,7 @@ def claim_rewards(page):
     print("Scanning for rewards...")
     page.wait_for_load_state("networkidle")
     
-    # סגירת קוקיז
+    # Accept cookies if the popup appears
     try:
         cookie_btn = page.get_by_role("button", name="ACCEPT ALL").first
         if cookie_btn.is_visible():
@@ -69,8 +79,8 @@ def claim_rewards(page):
             page.wait_for_timeout(2000)
     except: pass
 
-    # גלילה מסיבית כדי לוודא שכל האלמנטים נטענים
-    for i in range(10):
+    # Scroll to trigger lazy-loading of store items
+    for _ in range(10):
         page.evaluate("window.scrollBy(0, 1000)")
         time.sleep(0.5)
 
@@ -78,7 +88,6 @@ def claim_rewards(page):
     max_attempts = 15
     
     while claimed < max_attempts:
-        # מחפש את כל המילים הרלוונטיות
         selector = "button:has-text('FREE'), button:has-text('GET'), button:has-text('CLAIM')"
         buttons = page.locator(selector)
         count = buttons.count()
@@ -87,20 +96,16 @@ def claim_rewards(page):
         for i in range(count):
             btn = buttons.nth(i)
             try:
-                # 1. בדיקה אם הכפתור פעיל
-                if not btn.is_enabled():
-                    continue
+                if not btn.is_enabled(): continue
 
                 txt = btn.inner_text().upper()
                 
-                # 2. סינון רכישות בכסף או מנויים
-                if "$" in txt or "MONTH" in txt:
-                    continue
+                # Filter out paid items
+                if "$" in txt or "MONTH" in txt: continue
                 
-                # 3. סינון Milestones נעולים לפי הטקסט שמתחת לכפתור (כמו שראינו ב-claim_14.jpg)
-                # אנחנו בודקים את הטקסט של ה-Container שעוטף את הכפתור
+                # Filter out locked milestone points
                 parent_text = btn.locator("xpath=..").inner_text().upper()
-                if "MORE MARKET POINTS" in parent_text or "GET" in parent_text and "POINTS" in parent_text:
+                if "MORE MARKET POINTS" in parent_text or ("GET" in parent_text and "POINTS" in parent_text):
                     continue
 
                 if btn.is_visible():
@@ -118,12 +123,12 @@ def claim_rewards(page):
             target_btn.click(force=True)
             page.wait_for_timeout(5000)
             
-            # בדיקת ניתוק סשן פתאומי
+            # Check if we got kicked to a login screen mid-process
             if page.get_by_text("LOGIN WITH KABAM").first.is_visible():
                 print("Auth popup detected - stopping.")
                 return "AUTH_FAILED"
 
-            page.keyboard.press("Escape")
+            page.keyboard.press("Escape") # Close any "Item Claimed" popups
             page.wait_for_timeout(2000)
             claimed += 1
             save_debug_info(page, f"claimed_{claimed}")
@@ -138,16 +143,18 @@ def claim_rewards(page):
 
 def run():
     if not EMAIL or not PASSWORD:
-        print("Missing credentials!")
+        print("Error: KABAM_EMAIL or KABAM_PASSWORD environment variables are missing!")
         return
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         
-        # לוגין ראשוני אם אין קובץ סשן
+        # Step 1: Check if we have a session file. If not, log in.
         if not os.path.exists(SESSION_FILE):
+            print("No session file found.")
             login_and_save(browser)
 
+        # Step 2: Open browser with the existing session
         context = browser.new_context(viewport={"width": 1280, "height": 720}, storage_state=SESSION_FILE)
         page = context.new_page()
         
@@ -156,24 +163,31 @@ def run():
             page.goto(STORE_URL, wait_until="networkidle")
             page.wait_for_timeout(5000)
             
-            # בדיקה אם באמת מחוברים (למקרה שהסשן בקובץ פג)
+            # Step 3: Validate if session is still alive
             if not check_auth(page):
-                print("Session expired. Re-logging...")
+                print("Session expired or invalid. Re-logging...")
                 context.close()
                 login_and_save(browser)
+                
+                # Re-open context with the NEW session file created by login_and_save
                 context = browser.new_context(viewport={"width": 1280, "height": 720}, storage_state=SESSION_FILE)
                 page = context.new_page()
                 page.goto(STORE_URL, wait_until="networkidle")
                 page.wait_for_timeout(5000)
 
-            claim_rewards(page)
+            # Step 4: Run the claiming logic
+            result = claim_rewards(page)
             
+            # Final check: if claiming failed due to auth, you could retry once here.
+            if result == "AUTH_FAILED":
+                print("Final auth check failed during claiming.")
+
         except Exception as e:
             print(f"Runtime error: {e}")
             send_telegram_msg(f"⚠️ Error: {str(e)[:100]}")
         finally:
             browser.close()
-            print("Done.")
+            print("Process finished.")
 
 if __name__ == "__main__":
     run()
