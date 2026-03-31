@@ -24,8 +24,8 @@ def send_telegram_msg(message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": f"🤖 MCOC: {message}"}, timeout=15)
-    except:
-        pass
+    except Exception as e:
+        print(f"[TELEGRAM] Failed: {e}")
 
 
 def save_debug_info(page, name):
@@ -47,221 +47,218 @@ def save_html(page, name):
         print(f"[DEBUG] HTML save FAILED for '{name}': {e}")
 
 
-def check_auth(page):
+def dismiss_cookies(page):
     try:
-        if page.get_by_text("LOG IN").first.is_visible():
-            return False
-        has_cart = page.get_by_role("button", name="CART").first.is_visible()
-        has_name = page.locator("[class*='player-name']").first.is_visible()
-        return has_cart or has_name
-    except:
-        return False
-
-
-def login_and_save(browser):
-    print("Starting fresh login...")
-    context = browser.new_context(viewport={"width": 1280, "height": 720})
-    page = context.new_page()
-    try:
-        print(f"Navigating to Xsolla auth URL...")
-        page.goto(XSOLLA_AUTH_URL, wait_until="networkidle", timeout=60000)
-        save_debug_info(page, "login_01_loaded")
-        save_html(page, "login_01_loaded")
-
-        print("Waiting for email input...")
-        page.wait_for_selector('input[type="email"]', timeout=30000)
-        page.fill('input[type="email"]', EMAIL)
-        page.fill('input[type="password"]', PASSWORD)
-        save_debug_info(page, "login_02_filled")
-
-        print("Clicking login button...")
-        login_btn = page.get_by_role("button", name="Login")
-        login_btn.click()
-
-        print("Waiting for redirect to store...")
-        page.wait_for_url(re.compile(r"store\.playcontestofchampions"), timeout=60000)
-        page.wait_for_load_state("networkidle")
-        page.wait_for_timeout(7000)
-        save_debug_info(page, "login_03_redirected")
-        save_html(page, "login_03_redirected")
-
-        # Dismiss cookies
-        try:
-            cookie_btn = page.get_by_role("button", name="ACCEPT").first
-            if cookie_btn.is_visible():
-                cookie_btn.click()
-                page.wait_for_timeout(2000)
-                print("Cookie banner dismissed during login.")
-        except:
-            pass
-
-        page.wait_for_timeout(3000)
-        save_debug_info(page, "login_04_final_state")
-        save_html(page, "login_04_final_state")
-
-        login_still_visible = False
-        try:
-            login_still_visible = page.get_by_text("LOG IN").first.is_visible()
-        except:
-            pass
-
-        if login_still_visible:
-            raise Exception("Store still shows logged-out state after login attempt.")
-
-        context.storage_state(path=SESSION_FILE)
-        print("Login success and session saved.")
-
-    except Exception as e:
-        save_debug_info(page, "login_fail")
-        save_html(page, "login_fail")
-        raise e
-    finally:
-        context.close()
-
-
-def claim_rewards(page):
-    print("Scanning for rewards...")
-    page.wait_for_load_state("networkidle")
-    save_debug_info(page, "store_01_initial")
-    save_html(page, "store_01_initial")
-
-    try:
-        cookie_btn = page.get_by_role("button", name="ACCEPT ALL").first
-        if cookie_btn.is_visible():
-            cookie_btn.click()
-            page.wait_for_timeout(2000)
-            print("Cookie banner dismissed.")
+        for label in ["ACCEPT ALL", "ACCEPT", "Accept All", "Accept"]:
+            btn = page.get_by_role("button", name=label).first
+            if btn.is_visible():
+                btn.click()
+                page.wait_for_timeout(1500)
+                print(f"[COOKIE] Dismissed with '{label}'")
+                return
     except:
         pass
 
-    for i in range(10):
-        page.evaluate("window.scrollBy(0, 1000)")
-        time.sleep(0.5)
 
-    save_debug_info(page, "store_02_after_scroll")
-    save_html(page, "store_02_after_scroll")
+def check_auth(page):
+    """Returns True if the store shows a logged-in state."""
+    try:
+        # Look for LOGIN buttons — if they exist, we're logged out
+        login_buttons = page.locator("a:has-text('LOGIN'), button:has-text('LOGIN'), button:has-text('LOG IN')")
+        count = login_buttons.count()
+        print(f"[AUTH] Found {count} LOGIN button(s) on page")
+        if count > 0:
+            return False
+        return True
+    except Exception as e:
+        print(f"[AUTH] check_auth error: {e}")
+        return False
+
+
+def claim_rewards(page):
+    print("[CLAIM] Starting reward scan...")
+    page.wait_for_load_state("domcontentloaded")
+    dismiss_cookies(page)
+
+    # Scroll to load all lazy elements
+    for i in range(12):
+        page.evaluate("window.scrollBy(0, 800)")
+        time.sleep(0.4)
+    page.evaluate("window.scrollTo(0, 0)")
+    page.wait_for_timeout(1000)
+
+    save_debug_info(page, "store_after_scroll")
+    save_html(page, "store_after_scroll")
 
     claimed = 0
     max_attempts = 15
 
     while claimed < max_attempts:
-        selector = "button:has-text('FREE'), button:has-text('GET'), button:has-text('CLAIM')"
+        # Find all free/claim buttons
+        selector = "button:has-text('FREE'), button:has-text('CLAIM')"
         buttons = page.locator(selector)
         count = buttons.count()
-        print(f"[DEBUG] Found {count} potential buttons.")
+        print(f"[CLAIM] Found {count} FREE/CLAIM buttons.")
+
+        # Also log all LOGIN buttons for context
+        login_count = page.locator("button:has-text('LOGIN'), a:has-text('LOGIN')").count()
+        print(f"[CLAIM] Found {login_count} LOGIN buttons (items needing purchase/auth).")
 
         target_btn = None
         for i in range(count):
             btn = buttons.nth(i)
             try:
-                if not btn.is_enabled():
+                if not btn.is_enabled() or not btn.is_visible():
                     continue
-                txt = btn.inner_text().upper()
-                print(f"[DEBUG] Button #{i} text: '{txt}'")
+
+                txt = btn.inner_text().strip().upper()
+                print(f"[CLAIM] Checking button #{i}: '{txt}'")
+
                 if "$" in txt or "MONTH" in txt:
-                    print(f"[DEBUG] Skipping paid item: '{txt}'")
+                    print(f"[CLAIM]   → Skipping (paid)")
                     continue
-                parent_text = btn.locator("xpath=..").inner_text().upper()
+
+                parent_text = ""
+                try:
+                    parent_text = btn.locator("xpath=ancestor::*[3]").inner_text().upper()
+                except:
+                    pass
+
                 if "MORE MARKET POINTS" in parent_text or ("GET" in parent_text and "POINTS" in parent_text):
-                    print(f"[DEBUG] Skipping milestone: '{parent_text[:80]}'")
+                    print(f"[CLAIM]   → Skipping (milestone gate)")
                     continue
-                if btn.is_visible():
-                    target_btn = btn
-                    break
-            except:
+
+                target_btn = btn
+                print(f"[CLAIM]   → Selected as target")
+                break
+            except Exception as e:
+                print(f"[CLAIM]   → Error: {e}")
                 continue
 
         if not target_btn:
-            print("No more valid items to claim.")
-            save_debug_info(page, f"store_no_more_items_{claimed}")
+            print("[CLAIM] No more claimable items found.")
+            save_debug_info(page, f"store_done_after_{claimed}_claims")
             break
 
         try:
-            print(f"Claiming item #{claimed + 1}...")
+            print(f"[CLAIM] Clicking item #{claimed + 1}...")
             target_btn.scroll_into_view_if_needed()
-            save_debug_info(page, f"store_before_claim_{claimed + 1}")
+            page.wait_for_timeout(500)
+            save_debug_info(page, f"claim_{claimed + 1}_before")
             target_btn.click(force=True)
             page.wait_for_timeout(5000)
-            save_debug_info(page, f"store_after_claim_{claimed + 1}")
+            save_debug_info(page, f"claim_{claimed + 1}_after")
 
-            if page.get_by_text("LOGIN WITH KABAM").first.is_visible():
-                print("Auth popup detected - stopping.")
-                save_debug_info(page, "store_auth_popup")
-                return "AUTH_FAILED"
-
+            # Dismiss any confirmation/result popup
             page.keyboard.press("Escape")
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(1500)
             claimed += 1
+
         except Exception as e:
-            print(f"[DEBUG] Click failed: {e}")
-            save_debug_info(page, f"store_click_error_{claimed}")
+            print(f"[CLAIM] Click error: {e}")
+            save_debug_info(page, f"claim_error_{claimed}")
             break
 
-    if claimed > 0:
-        send_telegram_msg(f"✅ Successfully claimed {claimed} rewards!")
-    else:
-        send_telegram_msg("👀 No rewards found today.")
-    return "SUCCESS"
+    msg = f"✅ Claimed {claimed} rewards!" if claimed > 0 else "👀 No claimable rewards found today."
+    send_telegram_msg(msg)
+    print(f"[CLAIM] Done. {msg}")
 
 
 def run():
+    print(f"EMAIL is set: {'yes' if EMAIL else 'NO'}")
+    print(f"SESSION_FILE existed at start: {os.path.exists(SESSION_FILE)}")
+
     if not EMAIL or not PASSWORD:
         print("Missing credentials!")
-        send_telegram_msg("⚠️ Missing EMAIL or PASSWORD environment variables!")
         return
 
-    print(f"EMAIL is set: {'yes' if EMAIL else 'no'}")
-    print(f"SESSION_FILE exists: {os.path.exists(SESSION_FILE)}")
-
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-        page = None
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
+        )
+
+        # Use ONE context for the entire flow — login + store in the same session
+        context = browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        page = context.new_page()
 
         try:
-            if not os.path.exists(SESSION_FILE):
-                print("No session file found, logging in fresh...")
-                login_and_save(browser)
-            else:
-                print("Session file found, skipping login.")
+            # Step 1: Go to the Xsolla/Kabam login page
+            print("[RUN] Navigating to auth URL...")
+            page.goto(XSOLLA_AUTH_URL, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(2000)
+            save_debug_info(page, "login_01_loaded")
+            save_html(page, "login_01_loaded")
+            print(f"[RUN] URL after auth nav: {page.url}")
 
-            context = browser.new_context(viewport={"width": 1280, "height": 720}, storage_state=SESSION_FILE)
-            page = context.new_page()
+            # Step 2: Fill credentials
+            print("[RUN] Waiting for email input...")
+            page.wait_for_selector('input[type="email"]', timeout=30000)
+            page.fill('input[type="email"]', EMAIL)
+            page.wait_for_timeout(300)
+            page.fill('input[type="password"]', PASSWORD)
+            page.wait_for_timeout(300)
+            save_debug_info(page, "login_02_filled")
 
-            print("Opening store...")
-            page.goto(STORE_URL, wait_until="networkidle", timeout=60000)
-            page.wait_for_timeout(5000)
-            save_debug_info(page, "run_01_store_loaded")
-            save_html(page, "run_01_store_loaded")
+            # Step 3: Submit
+            print("[RUN] Submitting login form...")
+            try:
+                page.get_by_role("button", name="Login").click()
+            except:
+                page.keyboard.press("Enter")
 
-            if not check_auth(page):
-                print("Session expired or invalid. Re-logging...")
-                save_debug_info(page, "run_02_auth_check_failed")
-                context.close()
-                os.remove(SESSION_FILE)
-                login_and_save(browser)
-                context = browser.new_context(viewport={"width": 1280, "height": 720}, storage_state=SESSION_FILE)
-                page = context.new_page()
-                page.goto(STORE_URL, wait_until="networkidle", timeout=60000)
-                page.wait_for_timeout(5000)
-                save_debug_info(page, "run_03_after_relogin")
-                save_html(page, "run_03_after_relogin")
+            # Step 4: Wait for redirect back to store
+            print("[RUN] Waiting for store redirect...")
+            page.wait_for_url(re.compile(r"store\.playcontestofchampions"), timeout=90000)
+            page.wait_for_load_state("domcontentloaded")
+            page.wait_for_timeout(6000)  # Extra wait for auth cookies to settle
+            print(f"[RUN] Redirected to: {page.url}")
+
+            dismiss_cookies(page)
+            page.wait_for_timeout(2000)
+
+            save_debug_info(page, "login_03_post_redirect")
+            save_html(page, "login_03_post_redirect")
+
+            # Step 5: Verify auth in the SAME context/page
+            is_auth = check_auth(page)
+            print(f"[RUN] Auth check: {is_auth}")
+            save_debug_info(page, "login_04_auth_check")
+
+            if not is_auth:
+                print("[RUN] Still not authenticated after login. Aborting.")
+                send_telegram_msg("⚠️ Login failed — still logged out after redirect. Check debug screenshots.")
+                return
+
+            # Step 6: Save session for potential future use
+            context.storage_state(path=SESSION_FILE)
+            print("[RUN] Session saved.")
+
+            # Step 7: Claim rewards on the same page/context
+            print("[RUN] Proceeding to claim rewards...")
+            # Navigate to store root to ensure clean state
+            page.goto(STORE_URL, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(3000)
+            dismiss_cookies(page)
+            save_debug_info(page, "store_01_loaded")
 
             claim_rewards(page)
 
         except Exception as e:
-            print(f"Runtime error: {e}")
-            send_telegram_msg(f"⚠️ Error: {str(e)[:200]}")
-            if page:
-                save_debug_info(page, "run_fatal_error")
-                save_html(page, "run_fatal_error")
+            print(f"[RUN] FATAL ERROR: {e}")
+            send_telegram_msg(f"⚠️ Fatal error: {str(e)[:200]}")
+            try:
+                save_debug_info(page, "fatal_error")
+                save_html(page, "fatal_error")
+            except:
+                pass
         finally:
-            # Always write a heartbeat file so the artifact upload has at least something
-            with open(f"{DEBUG_DIR}/run_log.txt", "w") as f:
-                f.write(f"Script completed at {time.strftime('%Y-%m-%d %Human:%M:%S')}\n")
-                f.write(f"SESSION_FILE existed at start: {os.path.exists(SESSION_FILE)}\n")
-                f.write(f"EMAIL set: {'yes' if EMAIL else 'no'}\n")
+            context.close()
             browser.close()
-            print("Done.")
+            print("[RUN] Done.")
 
 
 if __name__ == "__main__":
