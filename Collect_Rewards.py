@@ -60,11 +60,31 @@ def dismiss_cookies(page):
         pass
 
 
+def dismiss_popup(page):
+    """Try to close any popup/modal that appeared after claiming."""
+    for close_label in ["CLOSE", "OK", "COLLECT", "CONFIRM", "DONE", "CLAIM"]:
+        try:
+            for tag in ["span", "button"]:
+                el = page.locator(f"{tag}:has-text('{close_label}')").first
+                if el.is_visible():
+                    el.click()
+                    page.wait_for_timeout(1000)
+                    print(f"[CLAIM]   Dismissed popup with '{close_label}'")
+                    return
+        except:
+            pass
+    # Fallback: Escape key
+    try:
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(500)
+    except:
+        pass
+
+
 def login(page):
     print("[LOGIN] Navigating to store...")
     page.goto(STORE_URL, wait_until="domcontentloaded", timeout=60000)
 
-    # Wait for the JS app to render — wait for element to exist in DOM (not necessarily visible)
     print("[LOGIN] Waiting for store JS to render...")
     page.wait_for_selector("span.button-login", state="attached", timeout=30000)
     page.wait_for_timeout(2000)
@@ -72,11 +92,9 @@ def login(page):
     save_debug_info(page, "login_01_store")
     save_html(page, "login_01_store")
 
-    # There are 2 button-login spans (desktop + mobile nav), click the first one using JS
     print("[LOGIN] Clicking LOGIN button via JS...")
     page.evaluate("document.querySelector('span.button-login').click()")
 
-    # Wait for redirect to kid.kabam.com
     print("[LOGIN] Waiting for redirect to kid.kabam.com...")
     page.wait_for_url(re.compile(r"kid\.kabam\.com"), timeout=30000)
     page.wait_for_load_state("domcontentloaded")
@@ -85,7 +103,6 @@ def login(page):
     save_debug_info(page, "login_02_kabam")
     save_html(page, "login_02_kabam")
 
-    # Fill credentials
     print("[LOGIN] Filling credentials...")
     page.wait_for_selector('input[type="email"]', state="visible", timeout=20000)
     page.fill('input[type="email"]', EMAIL)
@@ -94,14 +111,12 @@ def login(page):
     page.wait_for_timeout(300)
     save_debug_info(page, "login_03_filled")
 
-    # Submit
     print("[LOGIN] Submitting...")
     try:
         page.locator('button[type="submit"]').first.click()
     except:
         page.keyboard.press("Enter")
 
-    # Wait for redirect back to store
     print("[LOGIN] Waiting for redirect back to store...")
     page.wait_for_url(re.compile(r"store\.playcontestofchampions"), timeout=90000)
     page.wait_for_load_state("domcontentloaded")
@@ -127,7 +142,7 @@ def claim_rewards(page):
     save_debug_info(page, "store_after_scroll")
     save_html(page, "store_after_scroll")
 
-    # Log all free item actions and their button text for diagnosis
+    # Log free item containers
     free_actions = page.locator(".item-action-free")
     print(f"[CLAIM] Found {free_actions.count()} free item action container(s).")
     for i in range(free_actions.count()):
@@ -151,59 +166,37 @@ def claim_rewards(page):
             break
 
         target_btn = None
-        target_index = -1
         for i in range(count):
             btn = free_btns.nth(i)
             try:
                 txt = btn.inner_text().strip().upper()
                 print(f"[CLAIM]   Button #{i}: '{txt}'")
                 if "LOGIN" in txt:
-                    print(f"[CLAIM]   → Still LOGIN, not logged in properly")
+                    print(f"[CLAIM]   → Skipping (LOGIN)")
                     continue
                 target_btn = btn
-                target_index = i
                 print(f"[CLAIM]   → Selected")
                 break
             except:
                 continue
 
         if not target_btn:
-            print("[CLAIM] No claimable items (all showing LOGIN or empty).")
+            print("[CLAIM] No claimable items found.")
             save_debug_info(page, f"store_done_after_{claimed}_claims")
             break
 
         try:
-            print(f"[CLAIM] Claiming item #{claimed + 1} (index {target_index})...")
+            print(f"[CLAIM] Claiming item #{claimed + 1}...")
             target_btn.scroll_into_view_if_needed()
             page.wait_for_timeout(500)
             save_debug_info(page, f"claim_{claimed + 1}_before")
 
-            # Click via JS to avoid visibility issues
-            page.evaluate(
-                "els => els[arguments[0]].click()",
-                [page.locator(".item-action-free span.primary-button"), target_index]
-            )
-            # Fallback to direct click
             target_btn.click(force=True)
-
             page.wait_for_timeout(6000)
             save_debug_info(page, f"claim_{claimed + 1}_after")
             save_html(page, f"claim_{claimed + 1}_after")
 
-            # Dismiss popup
-            for close_label in ["CLOSE", "OK", "COLLECT", "CONFIRM", "DONE"]:
-                try:
-                    for tag in ["span", "button"]:
-                        el = page.locator(f"{tag}:has-text('{close_label}')").first
-                        if el.is_visible():
-                            el.click()
-                            page.wait_for_timeout(1000)
-                            print(f"[CLAIM]   Dismissed popup with '{close_label}'")
-                            break
-                except:
-                    pass
-
-            page.keyboard.press("Escape")
+            dismiss_popup(page)
             page.wait_for_timeout(2000)
             claimed += 1
 
@@ -239,15 +232,12 @@ def run():
         try:
             login(page)
 
-            # Verify login succeeded — button-login should be gone
-            page.wait_for_timeout(2000)
             login_btn_count = page.locator("span.button-login").count()
             print(f"[RUN] button-login spans still present: {login_btn_count}")
             save_debug_info(page, "auth_check")
             save_html(page, "auth_check")
 
             if login_btn_count > 0:
-                # Check if the text changed from LOGIN to something else (logged-in state)
                 btn_text = page.locator("span.button-login").first.inner_text().strip()
                 print(f"[RUN] button-login text: '{btn_text}'")
                 if "LOGIN" in btn_text.upper():
