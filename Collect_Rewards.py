@@ -30,91 +30,76 @@ def save_debug_info(page, name):
         print(f"DEBUG: Failed to save screenshot {name}: {e}")
 
 def check_auth(page):
-    """Returns True if logged in, False if 'LOGIN' button is visible."""
     try:
-        # Check the top nav login button
+        # Check if the 'LOGIN' button in top nav is missing
         nav_login = page.locator("button:has-text('LOGIN')").first
         if nav_login.is_visible():
             return False
-        # If we see 'CART' or a player name element, we are in
         return page.locator("[class*='player-name']").first.is_visible() or \
                page.get_by_role("button", name="CART").first.is_visible()
     except:
         return False
 
 def login_and_save(browser):
-    print("ACTION: Starting human-like login flow...")
+    print("ACTION: Starting Login Flow...")
     context = browser.new_context(viewport={"width": 1280, "height": 720})
     page = context.new_page()
     try:
         page.goto(XSOLLA_AUTH_URL, wait_until="networkidle", timeout=60000)
-        
-        # Wait for fields
         page.wait_for_selector('input[type="email"]', timeout=30000)
         
-        # Human-like interaction
-        page.click('input[type="email"]')
+        # Filling info
         page.fill('input[type="email"]', EMAIL)
         time.sleep(1)
-        
-        page.click('input[type="password"]')
         page.fill('input[type="password"]', PASSWORD)
         time.sleep(1)
         
-        # Click the actual Login button instead of just Enter
-        # Xsolla usually has a button with text 'Log in' or 'Sign in'
-        login_button = page.locator("button:has-text('LOG IN'), button:has-text('SIGN IN')").first
-        login_button.click()
+        # Updated selector for the actual Login button
+        # Based on your image, it is a button with text "Login"
+        print("ACTION: Clicking Login button...")
+        login_btn = page.get_by_role("button", name="Login", exact=True)
+        login_btn.click()
         
-        # Wait for the store to load after redirect
+        # Wait for redirect to complete
+        print("ACTION: Waiting for redirect...")
         page.wait_for_url(re.compile(r"store\.playcontestofchampions"), timeout=60000)
-        print("ACTION: Redirected back to store. Waiting for session to settle...")
-        time.sleep(12) 
+        time.sleep(15) # Give it time to load the items after redirect
         
         if check_auth(page):
-            print("SUCCESS: Login verified!")
-            save_debug_info(page, "1_login_verified_final")
+            print("SUCCESS: Logged in successfully.")
             context.storage_state(path=SESSION_FILE)
+            save_debug_info(page, "1_login_verified")
         else:
-            print("FAILURE: Redirected but 'LOGIN' button still visible.")
-            save_debug_info(page, "ERROR_redirect_but_no_auth")
+            print("FAILURE: Login clicked but redirect didn't result in auth.")
+            save_debug_info(page, "ERROR_login_failed_after_click")
             
     except Exception as e:
         save_debug_info(page, "ERROR_login_crash")
+        print(f"CRASH: {str(e)}")
         raise e
     finally:
         context.close()
 
 def claim_rewards(page):
-    print("ACTION: Scanning for rewards...")
-    time.sleep(8) 
-    save_debug_info(page, "2_pre_scan_view")
+    print("ACTION: Scanning rewards...")
+    time.sleep(8)
+    save_debug_info(page, "2_store_view")
 
-    # Scroll heavily to load everything
     for i in range(10):
         page.evaluate("window.scrollBy(0, 1000)")
         time.sleep(0.5)
 
     claimed = 0
-    # Update selector to include 'LOGIN' buttons that should be 'CLAIM'
     selector = "button:has-text('FREE'), button:has-text('GET'), button:has-text('CLAIM')"
-    
     buttons = page.locator(selector)
     count = buttons.count()
-    print(f"DEBUG: Found {count} items matching criteria.")
-
+    
     for i in range(count):
         btn = buttons.nth(i)
         try:
             if not btn.is_visible(): continue
             txt = btn.inner_text().upper()
-            
-            # If the button STILL says LOGIN, the whole session failed
-            if "LOGIN" in txt:
-                print(f"DEBUG: Button {i} says LOGIN. Authentication failed.")
-                continue
-
-            if "$" in txt or "UNIT" in txt: continue
+            if "LOGIN" in txt or "$" in txt or "UNIT" in txt: continue
 
             print(f"ACTION: Claiming item #{claimed+1}...")
             btn.scroll_into_view_if_needed()
@@ -130,26 +115,24 @@ def claim_rewards(page):
     if claimed > 0:
         send_telegram_msg(f"✅ Successfully claimed {claimed} rewards!")
     else:
-        print("INFO: No rewards claimed.")
+        send_telegram_msg("👀 No rewards claimed. Check logs.")
     return claimed
 
 def run():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         
-        # If no session, or session is invalid, log in
-        if not os.path.exists(SESSION_FILE):
-            login_and_save(browser)
-
-        context = browser.new_context(storage_state=SESSION_FILE, viewport={"width": 1280, "height": 720})
-        page = context.new_page()
-        
         try:
+            if not os.path.exists(SESSION_FILE):
+                login_and_save(browser)
+
+            context = browser.new_context(storage_state=SESSION_FILE, viewport={"width": 1280, "height": 720})
+            page = context.new_page()
             page.goto(STORE_URL, wait_until="networkidle")
             time.sleep(8)
 
             if not check_auth(page):
-                print("WARNING: Session invalid. Retrying login...")
+                print("WARNING: Session invalid. Re-logging...")
                 context.close()
                 login_and_save(browser)
                 context = browser.new_context(storage_state=SESSION_FILE, viewport={"width": 1280, "height": 720})
@@ -160,7 +143,9 @@ def run():
             claim_rewards(page)
             
         except Exception as e:
-            print(f"CRITICAL: {e}")
+            error_msg = f"⚠️ Critical Script Error: {str(e)[:100]}"
+            print(error_msg)
+            send_telegram_msg(error_msg)
         finally:
             browser.close()
 
