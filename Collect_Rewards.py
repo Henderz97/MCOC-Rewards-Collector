@@ -22,24 +22,17 @@ def send_telegram_msg(message):
     except: pass
 
 def save_debug_info(page, name):
-    """Saves both a screenshot and the HTML content for deep debugging."""
     try:
         path = f"./{name}.png"
         page.screenshot(path=path, full_page=True)
-        print(f"Screenshot saved: {path}")
-        # Optional: Save HTML if you want to inspect the code later
-        # with open(f"./{name}.html", "w", encoding="utf-8") as f:
-        #     f.write(page.content())
+        print(f"DEBUG: Screenshot saved as {path}")
     except Exception as e:
-        print(f"Failed to save debug info {name}: {e}")
+        print(f"DEBUG: Failed to save screenshot {name}: {e}")
 
 def check_auth(page):
     try:
-        # If 'LOG IN' is visible, we are definitely not authenticated
-        login_btn = page.get_by_text("LOG IN").first
-        if login_btn.is_visible():
+        if page.get_by_text("LOG IN").first.is_visible():
             return False
-        
         is_auth = page.get_by_role("button", name="CART").first.is_visible() or \
                   page.locator("[class*='player-name']").first.is_visible()
         return is_auth
@@ -47,7 +40,7 @@ def check_auth(page):
         return False
 
 def login_and_save(browser):
-    print("Starting fresh login...")
+    print("ACTION: Starting fresh login...")
     context = browser.new_context(viewport={"width": 1280, "height": 720})
     page = context.new_page()
     try:
@@ -57,44 +50,46 @@ def login_and_save(browser):
         page.fill('input[type="password"]', PASSWORD)
         page.keyboard.press("Enter")
         
-        # Wait for redirect
         page.wait_for_url(re.compile(r"store\.playcontestofchampions"), timeout=60000)
-        page.wait_for_timeout(10000) 
+        time.sleep(10) 
         
-        save_debug_info(page, "after_login_success")
+        save_debug_info(page, "1_login_success_verification")
         context.storage_state(path=SESSION_FILE)
-        print("Login success state saved.")
+        print("SUCCESS: Session saved.")
     except Exception as e:
-        save_debug_info(page, "login_fail_trace")
+        save_debug_info(page, "ERROR_login_failed")
         raise e
     finally:
         context.close()
 
 def claim_rewards(page):
-    print("Scanning for rewards...")
+    print("ACTION: Scanning for rewards...")
     page.wait_for_load_state("networkidle")
-    time.sleep(5) # Extra wait for JavaScript elements
+    time.sleep(8) # Wait for rewards to load
     
-    save_debug_info(page, "pre_scan_state")
+    save_debug_info(page, "2_pre_scan_view")
 
-    # Try to close popups/cookies
     try:
-        page.get_by_role("button", name="ACCEPT ALL").first.click(timeout=3000)
+        cookie_btn = page.get_by_role("button", name="ACCEPT ALL").first
+        if cookie_btn.is_visible():
+            cookie_btn.click()
+            time.sleep(2)
     except: pass
 
-    # Scrolling to load all items
-    for i in range(5):
+    # Scroll to reveal all items
+    for i in range(8):
         page.evaluate("window.scrollBy(0, 1000)")
-        time.sleep(1)
+        time.sleep(0.8)
+
+    save_debug_info(page, "3_after_scrolling_view")
 
     claimed = 0
-    # Targeted selectors for 'FREE' rewards
     selector = "button:has-text('FREE'), button:has-text('GET'), button:has-text('CLAIM'), [role='button']:has-text('FREE')"
     
     while claimed < 15:
         buttons = page.locator(selector)
         count = buttons.count()
-        print(f"Found {count} potential buttons...")
+        print(f"DEBUG: Found {count} potential buttons...")
 
         target_btn = None
         for i in range(count):
@@ -105,7 +100,6 @@ def claim_rewards(page):
                 txt = btn.inner_text().upper()
                 parent_txt = btn.locator("xpath=..").inner_text().upper()
 
-                # Filter logic
                 if "$" in txt or "UNIT" in txt or "MONTH" in txt: continue
                 if "MORE MARKET POINTS" in parent_txt: continue
 
@@ -114,28 +108,30 @@ def claim_rewards(page):
             except: continue
 
         if not target_btn:
-            print("No valid claimable items found.")
-            save_debug_info(page, "final_scan_nothing_found")
+            print("INFO: No valid claimable items found.")
+            save_debug_info(page, "4_final_scan_nothing_left")
             break
 
         try:
-            print(f"Claiming item #{claimed+1}...")
+            print(f"ACTION: Claiming item #{claimed+1}...")
             target_btn.scroll_into_view_if_needed()
+            time.sleep(1)
             target_btn.click(force=True)
-            time.sleep(5)
+            time.sleep(6)
             
-            save_debug_info(page, f"claimed_item_{claimed+1}")
+            claimed += 1
+            save_debug_info(page, f"5_claimed_item_{claimed}")
             
-            # Close popup
             page.keyboard.press("Escape")
             time.sleep(2)
-            claimed += 1
         except Exception as e:
-            print(f"Error claiming: {e}")
+            print(f"ERROR: Claiming failed: {e}")
             break
 
     if claimed > 0:
         send_telegram_msg(f"✅ Successfully claimed {claimed} rewards!")
+    else:
+        send_telegram_msg("👀 No rewards found. Check debug screenshots.")
     return claimed
 
 def run():
@@ -143,32 +139,35 @@ def run():
         browser = p.chromium.launch(headless=True)
         
         if not os.path.exists(SESSION_FILE):
+            print("INFO: No session file. Logging in...")
             login_and_save(browser)
 
         context = browser.new_context(storage_state=SESSION_FILE, viewport={"width": 1280, "height": 720})
         page = context.new_page()
         
         try:
-            print("Navigating to store...")
+            print("ACTION: Navigating to Store...")
             page.goto(STORE_URL, wait_until="networkidle")
-            time.sleep(5)
+            time.sleep(6)
 
             if not check_auth(page):
-                print("Session expired. Refreshing...")
-                save_debug_info(page, "expired_session_view")
+                print("WARNING: Session expired. Refreshing...")
+                save_debug_info(page, "0_session_expired_fallback")
                 context.close()
                 login_and_save(browser)
                 context = browser.new_context(storage_state=SESSION_FILE, viewport={"width": 1280, "height": 720})
                 page = context.new_page()
                 page.goto(STORE_URL, wait_until="networkidle")
+                time.sleep(6)
 
             claim_rewards(page)
             
         except Exception as e:
-            print(f"Critical Error: {e}")
-            save_debug_info(page, "critical_error_state")
+            print(f"CRITICAL: {e}")
+            save_debug_info(page, "ERROR_critical_runtime")
         finally:
             browser.close()
+            print("INFO: Process complete.")
 
 if __name__ == "__main__":
     run()
