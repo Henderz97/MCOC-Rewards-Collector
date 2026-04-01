@@ -61,17 +61,18 @@ def dismiss_cookies(page):
 
 
 def dismiss_popup(page):
-    for close_label in ["CLOSE", "OK", "COLLECT", "CONFIRM", "DONE", "CLAIM"]:
-        try:
-            for tag in ["span", "button"]:
-                el = page.locator(f"{tag}:has-text('{close_label}')").first
-                if el.is_visible():
-                    el.click()
-                    page.wait_for_timeout(1000)
-                    print(f"[CLAIM]   Dismissed popup with '{close_label}'")
-                    return
-        except:
-            pass
+    """Close the success modal by clicking its backdrop."""
+    try:
+        backdrop = page.locator(".purchase-handler.modal-backdrop")
+        if backdrop.count() > 0:
+            backdrop.click(position={"x": 10, "y": 10})
+            page.wait_for_timeout(1500)
+            print("[CLAIM]   Dismissed success modal via backdrop click.")
+            return
+    except Exception as e:
+        print(f"[CLAIM]   Backdrop click failed: {e}")
+
+    # Fallback: Escape key
     try:
         page.keyboard.press("Escape")
         page.wait_for_timeout(500)
@@ -82,7 +83,6 @@ def dismiss_popup(page):
 def wait_for_store_ready(page):
     """Wait for the SPA to finish rendering after navigation."""
     print("[NAV] Waiting for store SPA to settle...")
-    # Wait for URL to be the clean store root (not the oauth callback)
     for _ in range(30):
         url = page.url
         if "oauth2/callback" not in url and "store.playcontestofchampions.com" in url:
@@ -90,7 +90,6 @@ def wait_for_store_ready(page):
         page.wait_for_timeout(1000)
         print(f"[NAV]   Still at: {url}")
 
-    # Wait for the nav bar to appear as sign the SPA has rendered
     try:
         page.wait_for_selector("#header-bar", state="attached", timeout=20000)
     except:
@@ -133,17 +132,14 @@ def login(page):
     except:
         page.keyboard.press("Enter")
 
-    # Wait for redirect back to store — use URL pattern, NOT wait_until="load"
-    # because the SPA uses hash routing and load event may not fire again
     print("[LOGIN] Waiting for redirect back to store...")
     page.wait_for_url(
         re.compile(r"store\.playcontestofchampions\.com"),
         timeout=90000,
-        wait_until="commit"  # Just wait for the navigation to start, not complete
+        wait_until="commit"
     )
     print(f"[LOGIN] Store URL detected: {page.url}")
 
-    # Now wait for the SPA to process the OAuth callback and settle
     wait_for_store_ready(page)
 
     dismiss_cookies(page)
@@ -155,7 +151,6 @@ def login(page):
 def claim_rewards(page):
     print("[CLAIM] Starting reward scan...")
 
-    # Scroll to load all lazy elements
     for i in range(15):
         page.evaluate("window.scrollBy(0, 800)")
         time.sleep(0.3)
@@ -165,7 +160,6 @@ def claim_rewards(page):
     save_debug_info(page, "store_after_scroll")
     save_html(page, "store_after_scroll")
 
-    # Log all item action containers for diagnosis
     all_actions = page.locator(".item-actions")
     print(f"[CLAIM] Total item action containers: {all_actions.count()}")
     for i in range(all_actions.count()):
@@ -181,6 +175,7 @@ def claim_rewards(page):
 
     claimed = 0
     max_attempts = 20
+    prev_free_count = -1
 
     while claimed < max_attempts:
         free_btns = page.locator(".item-action-free span.primary-button")
@@ -191,6 +186,14 @@ def claim_rewards(page):
             print("[CLAIM] No free buttons found — done.")
             save_debug_info(page, f"store_done_after_{claimed}_claims")
             break
+
+        # Stuck detection
+        if count == prev_free_count:
+            print("[CLAIM] Count unchanged — still stuck after dismiss attempt. Stopping.")
+            save_debug_info(page, f"store_stuck_at_{claimed}_claims")
+            save_html(page, f"store_stuck_at_{claimed}_claims")
+            break
+        prev_free_count = count
 
         target_btn = None
         for i in range(count):
@@ -220,13 +223,43 @@ def claim_rewards(page):
             save_debug_info(page, f"claim_{claimed + 1}_before")
 
             target_btn.click(force=True)
-            page.wait_for_timeout(6000)
+            page.wait_for_timeout(4000)
             save_debug_info(page, f"claim_{claimed + 1}_after")
             save_html(page, f"claim_{claimed + 1}_after")
 
             dismiss_popup(page)
             page.wait_for_timeout(2000)
-            claimed += 1
+
+            # Confirm claim worked by checking count decreased
+            new_count = page.locator(".item-action-free span.primary-button").count()
+            print(f"[CLAIM]   Free buttons after claim: {new_count} (was {count})")
+            if new_count < count:
+                claimed += 1
+                prev_free_count = new_count
+                print(f"[CLAIM]   ✅ Confirmed! Total claimed: {claimed}")
+            else:
+                print(f"[CLAIM]   ⚠️ Count unchanged after dismiss — trying harder.")
+                save_debug_info(page, f"claim_{claimed + 1}_stuck")
+                save_html(page, f"claim_{claimed + 1}_stuck")
+                # Try clicking backdrop again then escape
+                try:
+                    backdrop = page.locator(".purchase-handler.modal-backdrop")
+                    if backdrop.count() > 0:
+                        backdrop.click(position={"x": 10, "y": 10})
+                        page.wait_for_timeout(1000)
+                except:
+                    pass
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(1000)
+                page.mouse.click(100, 100)
+                page.wait_for_timeout(1000)
+                final_count = page.locator(".item-action-free span.primary-button").count()
+                if final_count == count:
+                    print("[CLAIM]   Still stuck — stopping.")
+                    break
+                else:
+                    claimed += 1
+                    prev_free_count = final_count
 
         except Exception as e:
             print(f"[CLAIM] Error on item #{claimed + 1}: {e}")
