@@ -66,22 +66,23 @@ def dismiss_popup(page):
         backdrop = page.locator(".purchase-handler.modal-backdrop")
         if backdrop.count() > 0:
             backdrop.click(position={"x": 10, "y": 10})
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(2000)
             print("[CLAIM]   Dismissed success modal via backdrop click.")
-            return
+            # Wait for modal to fully disappear
+            page.wait_for_selector(".purchase-handler.modal-backdrop", state="hidden", timeout=5000)
+            return True
     except Exception as e:
         print(f"[CLAIM]   Backdrop click failed: {e}")
 
-    # Fallback: Escape key
     try:
         page.keyboard.press("Escape")
-        page.wait_for_timeout(500)
+        page.wait_for_timeout(1000)
     except:
         pass
+    return False
 
 
 def wait_for_store_ready(page):
-    """Wait for the SPA to finish rendering after navigation."""
     print("[NAV] Waiting for store SPA to settle...")
     for _ in range(30):
         url = page.url
@@ -141,7 +142,6 @@ def login(page):
     print(f"[LOGIN] Store URL detected: {page.url}")
 
     wait_for_store_ready(page)
-
     dismiss_cookies(page)
     page.wait_for_timeout(2000)
     save_debug_info(page, "login_04_post_redirect")
@@ -160,41 +160,29 @@ def claim_rewards(page):
     save_debug_info(page, "store_after_scroll")
     save_html(page, "store_after_scroll")
 
-    all_actions = page.locator(".item-actions")
-    print(f"[CLAIM] Total item action containers: {all_actions.count()}")
-    for i in range(all_actions.count()):
-        try:
-            cls = all_actions.nth(i).get_attribute("class") or ""
-            txt = all_actions.nth(i).inner_text().strip()
-            print(f"[CLAIM]   Action #{i} class='{cls}' text='{txt}'")
-        except:
-            pass
+    # Count free items upfront
+    initial_free = page.locator(".item-action-free").count()
+    print(f"[CLAIM] Free items available: {initial_free}")
 
-    free_actions = page.locator(".item-action-free")
-    print(f"[CLAIM] Free item containers: {free_actions.count()}")
+    if initial_free == 0:
+        print("[CLAIM] No free items found — already claimed today or none available.")
+        send_telegram_msg("✅ Store checked — no free items to claim today (already done or none available).")
+        return
 
     claimed = 0
-    max_attempts = 20
-    prev_free_count = -1
+    consecutive_failures = 0
+    max_consecutive_failures = 3
 
-    while claimed < max_attempts:
+    while True:
         free_btns = page.locator(".item-action-free span.primary-button")
         count = free_btns.count()
-        print(f"[CLAIM] Round {claimed + 1}: Found {count} free button(s).")
+        print(f"[CLAIM] Free buttons remaining: {count}")
 
         if count == 0:
-            print("[CLAIM] No free buttons found — done.")
-            save_debug_info(page, f"store_done_after_{claimed}_claims")
+            print("[CLAIM] All free items claimed!")
             break
 
-        # Stuck detection
-        if count == prev_free_count:
-            print("[CLAIM] Count unchanged — still stuck after dismiss attempt. Stopping.")
-            save_debug_info(page, f"store_stuck_at_{claimed}_claims")
-            save_html(page, f"store_stuck_at_{claimed}_claims")
-            break
-        prev_free_count = count
-
+        # Find a claimable button
         target_btn = None
         for i in range(count):
             btn = free_btns.nth(i)
@@ -202,18 +190,14 @@ def claim_rewards(page):
                 txt = btn.inner_text().strip().upper()
                 print(f"[CLAIM]   Button #{i}: '{txt}'")
                 if "LOGIN" in txt:
-                    print(f"[CLAIM]   → Skipping (LOGIN)")
                     continue
                 target_btn = btn
-                print(f"[CLAIM]   → Selected")
                 break
-            except Exception as e:
-                print(f"[CLAIM]   → Error reading button #{i}: {e}")
+            except:
                 continue
 
         if not target_btn:
-            print("[CLAIM] All free buttons show LOGIN — done.")
-            save_debug_info(page, f"store_done_after_{claimed}_claims")
+            print("[CLAIM] No claimable buttons found.")
             break
 
         try:
@@ -225,51 +209,44 @@ def claim_rewards(page):
             target_btn.click(force=True)
             page.wait_for_timeout(4000)
             save_debug_info(page, f"claim_{claimed + 1}_after")
-            save_html(page, f"claim_{claimed + 1}_after")
 
-            dismiss_popup(page)
-            page.wait_for_timeout(2000)
+            # Wait for and dismiss the success modal
+            dismissed = dismiss_popup(page)
+            page.wait_for_timeout(1500)
 
-            # Confirm claim worked by checking count decreased
+            # Check if the count actually decreased
             new_count = page.locator(".item-action-free span.primary-button").count()
-            print(f"[CLAIM]   Free buttons after claim: {new_count} (was {count})")
             if new_count < count:
                 claimed += 1
-                prev_free_count = new_count
-                print(f"[CLAIM]   ✅ Confirmed! Total claimed: {claimed}")
+                consecutive_failures = 0
+                print(f"[CLAIM]   ✅ Claimed! Total: {claimed}, Remaining: {new_count}")
             else:
-                print(f"[CLAIM]   ⚠️ Count unchanged after dismiss — trying harder.")
-                save_debug_info(page, f"claim_{claimed + 1}_stuck")
-                save_html(page, f"claim_{claimed + 1}_stuck")
-                # Try clicking backdrop again then escape
-                try:
-                    backdrop = page.locator(".purchase-handler.modal-backdrop")
-                    if backdrop.count() > 0:
-                        backdrop.click(position={"x": 10, "y": 10})
-                        page.wait_for_timeout(1000)
-                except:
-                    pass
-                page.keyboard.press("Escape")
-                page.wait_for_timeout(1000)
-                page.mouse.click(100, 100)
-                page.wait_for_timeout(1000)
-                final_count = page.locator(".item-action-free span.primary-button").count()
-                if final_count == count:
-                    print("[CLAIM]   Still stuck — stopping.")
+                consecutive_failures += 1
+                print(f"[CLAIM]   ⚠️ Count unchanged ({new_count}). Failure #{consecutive_failures}")
+                save_debug_info(page, f"claim_stuck_{consecutive_failures}")
+                save_html(page, f"claim_stuck_{consecutive_failures}")
+                if consecutive_failures >= max_consecutive_failures:
+                    print("[CLAIM]   Too many failures — stopping.")
                     break
-                else:
-                    claimed += 1
-                    prev_free_count = final_count
 
         except Exception as e:
-            print(f"[CLAIM] Error on item #{claimed + 1}: {e}")
+            consecutive_failures += 1
+            print(f"[CLAIM] Error: {e}")
             save_debug_info(page, f"claim_error_{claimed}")
-            save_html(page, f"claim_error_{claimed}")
-            break
+            if consecutive_failures >= max_consecutive_failures:
+                break
 
-    msg = f"✅ Claimed {claimed} rewards!" if claimed > 0 else "👀 No free rewards to claim today."
+    # Build informative summary
+    remaining = page.locator(".item-action-free").count()
+    if claimed > 0 and remaining == 0:
+        msg = f"✅ Successfully claimed all {claimed} free reward(s)!"
+    elif claimed > 0 and remaining > 0:
+        msg = f"⚠️ Claimed {claimed} reward(s) but {remaining} still unclaimed — check debug."
+    else:
+        msg = "👀 No free rewards were claimed today."
+
     send_telegram_msg(msg)
-    print(f"[CLAIM] {msg}")
+    print(f"[CLAIM] Done. {msg}")
 
 
 def run():
@@ -301,7 +278,6 @@ def run():
                 print(f"[RUN] Session save failed (non-fatal): {e}")
 
             save_debug_info(page, "post_login_state")
-            save_html(page, "post_login_state")
 
             claim_rewards(page)
 
