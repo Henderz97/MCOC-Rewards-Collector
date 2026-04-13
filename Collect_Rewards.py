@@ -61,26 +61,53 @@ def dismiss_cookies(page):
 
 
 def dismiss_popup(page):
-    """Close the success modal by clicking its backdrop."""
+    """Close any post-claim modal — success modal or milestone modal."""
+
+    # Type 1: Milestone rewards modal (modal-bundle) — has a CONTINUE button
     try:
-        backdrop = page.locator(".purchase-handler.modal-backdrop")
-        if backdrop.count() > 0:
-            backdrop.click(position={"x": 10, "y": 10})
+        milestone_modal = page.locator(".modal-backdrop .modal-bundle")
+        if milestone_modal.count() > 0:
+            print("[CLAIM]   Milestone modal detected.")
+            # Click the CONTINUE span/button inside it
+            continue_btn = page.locator(".modal-bundle span.primary-button, .modal-bundle button").first
+            if continue_btn.count() > 0 and continue_btn.is_visible():
+                continue_btn.click(force=True)
+                page.wait_for_timeout(2000)
+                print("[CLAIM]   Clicked CONTINUE in milestone modal.")
+                try:
+                    page.wait_for_selector(".modal-backdrop .modal-bundle", state="hidden", timeout=5000)
+                except:
+                    pass
+                return True
+            # Fallback: click the backdrop
+            page.locator(".modal-backdrop").first.click(position={"x": 10, "y": 10})
             page.wait_for_timeout(2000)
-            print("[CLAIM]   Dismissed success modal via backdrop click.")
-            # Wait for modal to fully disappear
-            page.wait_for_selector(".purchase-handler.modal-backdrop", state="hidden", timeout=5000)
             return True
     except Exception as e:
-        print(f"[CLAIM]   Backdrop click failed: {e}")
+        print(f"[CLAIM]   Milestone modal handling failed: {e}")
 
+    # Type 2: Purchase success modal (purchase-handler)
+    try:
+        success_modal = page.locator(".purchase-handler.modal-backdrop")
+        if success_modal.count() > 0:
+            success_modal.click(position={"x": 10, "y": 10})
+            page.wait_for_timeout(2000)
+            print("[CLAIM]   Dismissed success modal via backdrop click.")
+            try:
+                page.wait_for_selector(".purchase-handler.modal-backdrop", state="hidden", timeout=5000)
+            except:
+                pass
+            return True
+    except Exception as e:
+        print(f"[CLAIM]   Success modal handling failed: {e}")
+
+    # Fallback: Escape key
     try:
         page.keyboard.press("Escape")
         page.wait_for_timeout(1000)
     except:
         pass
     return False
-
 
 def wait_for_store_ready(page):
     print("[NAV] Waiting for store SPA to settle...")
