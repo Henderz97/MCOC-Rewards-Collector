@@ -1,60 +1,38 @@
 name: MCOC Rewards Collector
-
 on:
   schedule:
     - cron: '0 4 * * *'
   workflow_dispatch:
-
 jobs:
-  collect:
+  build:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
-
-      - name: Cache pip dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: ${{ runner.os }}-pip-
-
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        id: playwright-cache
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('requirements.txt') }}
-
       - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Install Playwright browsers
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: playwright install chromium --with-deps
-
-      - name: Install Playwright system deps (cached run)
-        if: steps.playwright-cache.outputs.cache-hit == 'true'
-        run: playwright install-deps chromium
-
-      - name: Run collector
+        run: |
+          pip install playwright requests
+          playwright install chromium
+      - name: Run Collector
         env:
           KABAM_EMAIL: ${{ secrets.KABAM_EMAIL }}
           KABAM_PASSWORD: ${{ secrets.KABAM_PASSWORD }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python Collect_Rewards.py
-
-      - name: Upload debug artifacts
-        if: failure()
+        run: python Collect_[Rewards.py](http://Rewards.py)
+      - name: Upload All Logs and Debug Info
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mcoc-debug-${{ github.run_id }}
-          path: debug/
+          name: mcoc-full-debug-pack
+          path: |
+            debug/
+            *.png
+            *.html
+            *.json
           retention-days: 3
