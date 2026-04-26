@@ -24,7 +24,7 @@ jobs:
           KABAM_PASSWORD: ${{ secrets.KABAM_PASSWORD }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python Collect_[Rewards.py](http://Rewards.py)
+        run: python Collect_Rewards.py
       - name: Upload All Logs and Debug Info
         if: always()
         uses: actions/upload-artifact@v4
