@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import requests
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
@@ -132,7 +133,6 @@ def login(page):
     wait_for_store_ready(page)
     dismiss_cookies(page)
     save_debug(page, "04_post_login")
-    save_html(page, "04_post_login")
 
 
 def get_claimable_buttons(page):
@@ -255,7 +255,8 @@ def run():
 
     if not EMAIL or not PASSWORD:
         print("Missing credentials!")
-        return
+        send_telegram_msg("⚠️ Missing credentials — check repository secrets.")
+        sys.exit(1)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -297,9 +298,17 @@ def run():
                 save_html(page, "fatal_error")
             except:
                 pass
+            raise
+
         finally:
-            context.close()
-            browser.close()
+            try:
+                context.close()
+            except Exception as e:
+                print(f"[RUN] Context close failed: {e}")
+            try:
+                browser.close()
+            except Exception as e:
+                print(f"[RUN] Browser close failed: {e}")
             print("[RUN] Done.")
 
 
