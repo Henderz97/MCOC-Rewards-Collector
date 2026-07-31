@@ -1,2 +1,2 @@
-playwright==1.42.0
+playwright==REPLACE_ME
 requests==2.31.0
