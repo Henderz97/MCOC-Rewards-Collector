@@ -16,11 +16,30 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          # Restores the pip wheel cache keyed on requirements.txt.
+          cache: 'pip'
 
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          playwright install --with-deps chromium
+      - name: Install Python packages
+        run: pip install -r requirements.txt
+
+      # The browser binary (~170 MB) is the same on every run as long as the
+      # pinned Playwright version doesn't change, so download it once.
+      - name: Cache Playwright browser
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      # NOTE: deliberately no --with-deps. That flag runs apt-get update plus
+      # ~30 package installs on every run (the bulk of the old 3m34s), and the
+      # ubuntu-latest runner image already ships Chrome/Chromium and therefore
+      # every shared library headless chromium needs. If a future runner image
+      # ever drops them, the launch will fail loudly and you can restore the
+      # flag here.
+      - name: Install Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: playwright install chromium
 
       - name: Run Collector
         env:
