@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import time
 import requests
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
@@ -14,6 +15,13 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 DEBUG_DIR = "./debug"
 os.makedirs(DEBUG_DIR, exist_ok=True)
+
+# How many times we retry a single stubborn item before moving on to the next one.
+MAX_ATTEMPTS_PER_ITEM = 2
+# Hard ceiling on total click attempts, so we can never spin forever.
+MAX_TOTAL_ATTEMPTS = 30
+# How long to wait for the store SPA to reflect a successful claim.
+CLAIM_CONFIRM_TIMEOUT_MS = 9000
 
 
 def send_telegram_msg(message):
@@ -51,42 +59,198 @@ def dismiss_cookies(page):
                     page.wait_for_timeout(800)
                     print(f"[COOKIE] Dismissed with '{label}'")
                     return
-            except:
+            except Exception:
                 continue
 
 
-def dismiss_popup(page):
-    """Close any post-claim modal quickly."""
-    try:
-        milestone = page.locator(".modal-bundle span.primary-button").first
-        if milestone.is_visible(timeout=1000):
-            milestone.click(force=True)
-            page.wait_for_timeout(1000)
-            print("[CLAIM]   Dismissed milestone modal.")
-            return True
-    except:
-        pass
+# ---------------------------------------------------------------------------
+# Modal handling
+# ---------------------------------------------------------------------------
 
-    try:
-        success = page.locator(".purchase-handler.modal-backdrop").first
-        if success.is_visible(timeout=800):
-            success.click(position={"x": 10, "y": 10})
-            page.wait_for_timeout(800)
-            print("[CLAIM]   Dismissed success modal.")
-            return True
-    except:
-        pass
+MODAL_SELECTOR = ".modal-backdrop, .purchase-handler, .modal-bundle, .modal"
 
-    try:
-        page.keyboard.press("Escape")
-        page.wait_for_timeout(300)
-    except:
-        pass
-    return False
+MODAL_OPEN_JS = """
+(sel) => {
+  const els = document.querySelectorAll(sel);
+  for (const el of els) {
+    const r = el.getBoundingClientRect();
+    const s = getComputedStyle(el);
+    if (r.width > 1 && r.height > 1 &&
+        s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0') {
+      return true;
+    }
+  }
+  return false;
+}
+"""
 
+NUKE_MODAL_JS = """
+(sel) => {
+  let n = 0;
+  document.querySelectorAll(sel).forEach(el => {
+    const r = el.getBoundingClientRect();
+    if (r.width > 1 && r.height > 1) { el.remove(); n++; }
+  });
+  document.body.style.overflow = '';
+  document.documentElement.style.overflow = '';
+  document.body.classList.remove('modal-open', 'no-scroll', 'overflow-hidden');
+  return n;
+}
+"""
+
+# Close affordances, scoped inside a modal so we never click a store item by accident.
+MODAL_CLOSE_SELECTORS = [
+    ".modal-bundle span.primary-button",
+    ".purchase-handler span.primary-button",
+    ".modal-backdrop span.primary-button",
+    ".modal .close, .modal-close, .modal [class*='close']",
+    ".modal-backdrop [class*='close']",
+    ".purchase-handler [class*='close']",
+]
+
+
+def modal_open(page):
+    try:
+        return bool(page.evaluate(MODAL_OPEN_JS, MODAL_SELECTOR))
+    except Exception:
+        return False
+
+
+def close_modals(page, context=""):
+    """Close whatever modal is on screen. Returns True if the screen ended up clear."""
+    if not modal_open(page):
+        return True
+
+    for attempt in range(1, 5):
+        # 1. Named close affordances inside the modal.
+        for sel in MODAL_CLOSE_SELECTORS:
+            try:
+                el = page.locator(sel).first
+                if el.count() and el.is_visible(timeout=300):
+                    el.click(force=True, timeout=2000)
+                    page.wait_for_timeout(700)
+                    if not modal_open(page):
+                        print(f"[MODAL] Closed via '{sel}' (round {attempt})")
+                        return True
+            except Exception:
+                continue
+
+        # 2. Escape key.
+        try:
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(500)
+            if not modal_open(page):
+                print(f"[MODAL] Closed via Escape (round {attempt})")
+                return True
+        except Exception:
+            pass
+
+        # 3. Click the backdrop away from the dialog body.
+        try:
+            backdrop = page.locator(".modal-backdrop, .purchase-handler").first
+            if backdrop.count():
+                backdrop.click(position={"x": 8, "y": 8}, force=True, timeout=2000)
+                page.wait_for_timeout(600)
+                if not modal_open(page):
+                    print(f"[MODAL] Closed via backdrop click (round {attempt})")
+                    return True
+        except Exception:
+            pass
+
+    # 4. Last resort: rip it out of the DOM so it stops swallowing clicks.
+    try:
+        save_debug(page, f"modal_stuck_{context}")
+        save_html(page, f"modal_stuck_{context}")
+        removed = page.evaluate(NUKE_MODAL_JS, MODAL_SELECTOR)
+        page.wait_for_timeout(400)
+        print(f"[MODAL] ⚠️ Force-removed {removed} stuck modal element(s) ({context})")
+    except Exception as e:
+        print(f"[MODAL] Force-removal failed: {e}")
+
+    return not modal_open(page)
+
+
+# ---------------------------------------------------------------------------
+# Item scanning
+# ---------------------------------------------------------------------------
+
+SCAN_JS = """
+() => {
+  const containers = Array.from(document.querySelectorAll('.item-action-free'));
+  const seen = {};
+  return containers.map((c, i) => {
+    // Walk up a few levels to reach the item card, so the label is the item
+    // name rather than the button caption.
+    let card = c;
+    for (let hop = 0; hop < 3 && card.parentElement; hop++) card = card.parentElement;
+    let label = ((card.innerText || c.innerText || '')
+                  .replace(/\\s+/g, ' ').trim().slice(0, 90)) || ('item-' + i);
+    // Disambiguate items that share a label.
+    seen[label] = (seen[label] || 0) + 1;
+    const key = label + '##' + seen[label];
+
+    if (!c.dataset.collectorId) {
+      c.dataset.collectorId = 'mcoc-' + i + '-' + Math.random().toString(36).slice(2, 8);
+    }
+
+    const btn = c.querySelector('span.primary-button');
+    const soldOut = !!c.querySelector('.item-sold-out');
+    const txt = btn ? (btn.innerText || '').trim().toUpperCase() : '';
+    let visible = false;
+    if (btn) {
+      const r = btn.getBoundingClientRect();
+      const s = getComputedStyle(btn);
+      visible = r.width > 1 && r.height > 1 &&
+                s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
+    }
+    const claimable = !!btn && visible && !soldOut &&
+                      !txt.includes('LOGIN') && !txt.includes('SOLD');
+    return {id: c.dataset.collectorId, key, label, text: txt, claimable, soldOut};
+  });
+}
+"""
+
+
+def scan_items(page):
+    try:
+        return page.evaluate(SCAN_JS) or []
+    except Exception as e:
+        print(f"[SCAN] Failed: {e}")
+        return []
+
+
+def claimable_items(items):
+    return [it for it in items if it.get("claimable")]
+
+
+def full_scroll(page):
+    """Scroll the page end to end to force lazy-loaded items into the DOM."""
+    try:
+        page.evaluate("""
+            () => new Promise(resolve => {
+                const distance = 800;
+                const steps = Math.ceil(document.body.scrollHeight / distance) + 2;
+                let i = 0;
+                const interval = setInterval(() => {
+                    window.scrollBy(0, distance);
+                    if (++i >= steps) {
+                        clearInterval(interval);
+                        window.scrollTo(0, 0);
+                        resolve();
+                    }
+                }, 100);
+            })
+        """)
+        page.wait_for_timeout(1200)
+    except Exception as e:
+        print(f"[SCROLL] Failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Login
+# ---------------------------------------------------------------------------
 
 def wait_for_store_ready(page):
-    """Wait for the store SPA to fully load after OAuth redirect."""
     print("[NAV] Waiting for store SPA to settle...")
     page.wait_for_url(
         re.compile(r"store\.playcontestofchampions\.com"),
@@ -127,7 +291,7 @@ def login(page):
     print("[LOGIN] Submitting...")
     try:
         page.locator('button[type="submit"]').first.click()
-    except:
+    except Exception:
         page.keyboard.press("Enter")
 
     wait_for_store_ready(page)
@@ -135,114 +299,159 @@ def login(page):
     save_debug(page, "04_post_login")
 
 
-def get_claimable_buttons(page):
-    """Return list of visible, non-login, non-sold-out FREE buttons."""
-    claimable = []
-    btns = page.locator(".item-action-free span.primary-button")
-    for i in range(btns.count()):
-        btn = btns.nth(i)
-        try:
-            txt = btn.inner_text(timeout=500).strip().upper()
-            if "LOGIN" not in txt and "SOLD" not in txt and btn.is_visible(timeout=300):
-                claimable.append(btn)
-        except:
-            continue
-    return claimable
+# ---------------------------------------------------------------------------
+# Claiming
+# ---------------------------------------------------------------------------
+
+def click_item(page, item):
+    """Click one item's FREE button. Returns True if a click was dispatched."""
+    sel = f'[data-collector-id="{item["id"]}"] span.primary-button'
+    btn = page.locator(sel).first
+
+    try:
+        btn.scroll_into_view_if_needed(timeout=3000)
+        page.wait_for_timeout(250)
+    except Exception:
+        pass
+
+    # Preferred: a real click with actionability checks, so an overlay makes this
+    # fail loudly rather than silently landing on a backdrop.
+    try:
+        btn.click(timeout=5000)
+        return True
+    except Exception as e:
+        print(f"[CLAIM]   Normal click blocked ({type(e).__name__}), trying JS dispatch...")
+
+    # Fallback: dispatch straight to the element, bypassing any overlay.
+    try:
+        clicked = page.evaluate(
+            """(sel) => {
+                const el = document.querySelector(sel);
+                if (!el) return false;
+                el.click();
+                return true;
+            }""",
+            sel,
+        )
+        if clicked:
+            print("[CLAIM]   JS dispatch sent.")
+            return True
+        print("[CLAIM]   Element vanished before JS dispatch.")
+    except Exception as e:
+        print(f"[CLAIM]   JS dispatch failed: {e}")
+
+    return False
+
+
+def wait_for_claim_confirmed(page, key, timeout_ms=CLAIM_CONFIRM_TIMEOUT_MS):
+    """Poll until THIS item stops being claimable. Per-item, not a global count."""
+    deadline = time.time() + timeout_ms / 1000.0
+    while time.time() < deadline:
+        items = scan_items(page)
+        match = next((x for x in items if x["key"] == key), None)
+        if match is None or not match["claimable"]:
+            return True
+        page.wait_for_timeout(600)
+    return False
 
 
 def claim_rewards(page):
+    """Claim every free item. Returns (claimed, remaining_keys, sold_out)."""
     print("[CLAIM] Starting reward scan...")
-
-    page.evaluate("""
-        () => new Promise(resolve => {
-            const distance = 800;
-            const steps = Math.ceil(document.body.scrollHeight / distance);
-            let i = 0;
-            const interval = setInterval(() => {
-                window.scrollBy(0, distance);
-                if (++i >= steps) {
-                    clearInterval(interval);
-                    window.scrollTo(0, 0);
-                    resolve();
-                }
-            }, 100);
-        })
-    """)
-    page.wait_for_timeout(1200)
-
+    full_scroll(page)
     save_debug(page, "05_after_scroll")
 
-    claimable = get_claimable_buttons(page)
-    sold_out = page.locator(".item-action-free .item-sold-out").count()
-    print(f"[CLAIM] Found {len(claimable)} claimable, {sold_out} sold out")
+    items = scan_items(page)
+    pending = claimable_items(items)
+    # Counted up front: items already unavailable when we arrived. Counting at the
+    # end would fold in everything we just claimed, which reads as a false alarm.
+    sold_out = sum(1 for it in items if it["soldOut"])
+    print(f"[CLAIM] Found {len(pending)} claimable, {sold_out} sold out")
+    for it in pending:
+        print(f"[CLAIM]   • {it['label']} [{it['text']}]")
 
-    if not claimable:
-        print("[CLAIM] Nothing to claim.")
-        send_telegram_msg(f"✅ Store checked — nothing to claim today ({sold_out} item(s) sold out/reset pending).")
-        return
+    if not pending:
+        return 0, [], sold_out
 
+    attempts = {}          # key -> attempts made
     claimed = 0
-    consecutive_failures = 0
-    max_failures = 3
+    total_attempts = 0
 
-    while True:
-        claimable = get_claimable_buttons(page)
-        if not claimable:
+    while total_attempts < MAX_TOTAL_ATTEMPTS:
+        items = scan_items(page)
+        pending = claimable_items(items)
+        if not pending:
             print("[CLAIM] No more claimable items.")
             break
 
-        btn = claimable[0]
-        prev_count = len(claimable)
+        # Pick the first item that still has attempts left. This is the key fix:
+        # a stuck item is skipped instead of blocking everything behind it.
+        target = next(
+            (it for it in pending if attempts.get(it["key"], 0) < MAX_ATTEMPTS_PER_ITEM),
+            None,
+        )
+        if target is None:
+            print(f"[CLAIM] {len(pending)} item(s) exhausted their retries — giving up on them.")
+            break
 
+        key = target["key"]
+        attempts[key] = attempts.get(key, 0) + 1
+        total_attempts += 1
+        attempt_no = attempts[key]
+        print(f"[CLAIM] → '{target['label']}' (attempt {attempt_no}/{MAX_ATTEMPTS_PER_ITEM})")
+
+        # Never click with a modal still up — that is how clicks got eaten before.
+        close_modals(page, context=f"before_{total_attempts}")
+
+        dispatched = click_item(page, target)
+        if not dispatched:
+            save_debug(page, f"stuck_{total_attempts}")
+            save_html(page, f"stuck_{total_attempts}")
+            continue
+
+        # Let the confirmation modal appear, then clear it.
         try:
-            print(f"[CLAIM] Clicking item #{claimed + 1}...")
-            btn.scroll_into_view_if_needed()
-            page.wait_for_timeout(300)
-            btn.click(force=True)
+            page.wait_for_selector(MODAL_SELECTOR, state="visible", timeout=4000)
+        except PWTimeout:
+            pass
+        close_modals(page, context=f"after_{total_attempts}")
 
-            try:
-                page.wait_for_selector(
-                    ".modal-backdrop, .purchase-handler",
-                    state="visible",
-                    timeout=4000
-                )
-            except PWTimeout:
-                pass
+        if wait_for_claim_confirmed(page, key):
+            claimed += 1
+            print(f"[CLAIM]   ✅ Claimed '{target['label']}'. Total: {claimed}")
+        else:
+            print(f"[CLAIM]   ⚠️ '{target['label']}' still claimable after {CLAIM_CONFIRM_TIMEOUT_MS}ms")
+            save_debug(page, f"stuck_{total_attempts}")
+            save_html(page, f"stuck_{total_attempts}")
 
-            dismiss_popup(page)
+    if total_attempts >= MAX_TOTAL_ATTEMPTS:
+        print("[CLAIM] Hit the total attempt ceiling — stopping.")
 
-            new_claimable = get_claimable_buttons(page)
-            if len(new_claimable) < prev_count:
-                claimed += 1
-                consecutive_failures = 0
-                print(f"[CLAIM]   ✅ Claimed! Total: {claimed}, Remaining: {len(new_claimable)}")
-            else:
-                consecutive_failures += 1
-                print(f"[CLAIM]   ⚠️ Count unchanged. Failure #{consecutive_failures}")
-                save_debug(page, f"stuck_{consecutive_failures}")
-                save_html(page, f"stuck_{consecutive_failures}")
-                if consecutive_failures >= max_failures:
-                    print("[CLAIM]   Too many failures — stopping.")
-                    break
+    # Final state: rescan from scratch, including a fresh scroll in case new rows
+    # lazy-loaded while we were working.
+    full_scroll(page)
+    items = scan_items(page)
+    remaining = [it["label"] for it in claimable_items(items)]
+    save_debug(page, "06_final")
+    if remaining:
+        save_html(page, "06_final")
 
-        except Exception as e:
-            consecutive_failures += 1
-            print(f"[CLAIM] Error: {e}")
-            save_debug(page, f"error_{claimed}")
-            if consecutive_failures >= max_failures:
-                break
+    return claimed, remaining, sold_out
 
-    remaining = get_claimable_buttons(page)
-    sold_out = page.locator(".item-action-free .item-sold-out").count()
 
+def report(claimed, remaining, sold_out):
     if claimed > 0 and not remaining:
         msg = f"✅ Claimed all {claimed} free reward(s)!"
         if sold_out:
             msg += f" ({sold_out} item(s) sold out — will reset later)"
     elif claimed > 0 and remaining:
-        msg = f"⚠️ Claimed {claimed} but {len(remaining)} still unclaimed — check debug."
+        msg = (f"⚠️ Claimed {claimed}, but {len(remaining)} still unclaimed: "
+               f"{', '.join(remaining[:3])} — see the debug artifact.")
+    elif not claimed and remaining:
+        msg = (f"❌ Claimed nothing — {len(remaining)} item(s) available but unclaimable: "
+               f"{', '.join(remaining[:3])} — see the debug artifact.")
     else:
-        msg = "👀 Nothing claimed today."
+        msg = "✅ Store checked — nothing to claim today."
         if sold_out:
             msg += f" ({sold_out} item(s) sold out — will reset later)"
 
@@ -257,6 +466,8 @@ def run():
         print("Missing credentials!")
         send_telegram_msg("⚠️ Missing credentials — check repository secrets.")
         sys.exit(1)
+
+    remaining = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -288,7 +499,8 @@ def run():
 
         try:
             login(page)
-            claim_rewards(page)
+            claimed, remaining, sold_out = claim_rewards(page)
+            report(claimed, remaining, sold_out)
 
         except Exception as e:
             print(f"[RUN] FATAL ERROR: {e}")
@@ -296,7 +508,7 @@ def run():
             try:
                 save_debug(page, "fatal_error")
                 save_html(page, "fatal_error")
-            except:
+            except Exception:
                 pass
             raise
 
@@ -310,6 +522,12 @@ def run():
             except Exception as e:
                 print(f"[RUN] Browser close failed: {e}")
             print("[RUN] Done.")
+
+    # Fail the workflow when anything was left behind, so the run goes red and the
+    # debug artifact is worth looking at.
+    if remaining:
+        print(f"[RUN] Exiting non-zero: {len(remaining)} item(s) left unclaimed.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
