@@ -6,7 +6,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout code
@@ -30,11 +30,13 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python Collect_Rewards.py
 
-      - name: Upload debug pack on failure
-        if: failure()
+      # Always upload — a partial claim exits non-zero now, but even on a clean
+      # run the screenshots are what let us diagnose the next miss.
+      - name: Upload debug pack
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mcoc-debug-${{ github.run_number }}
           path: debug/
-          retention-days: 1
+          retention-days: 7
           if-no-files-found: ignore
