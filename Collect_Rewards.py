@@ -20,8 +20,9 @@ os.makedirs(DEBUG_DIR, exist_ok=True)
 MAX_ATTEMPTS_PER_ITEM = 2
 # Hard ceiling on total click attempts, so we can never spin forever.
 MAX_TOTAL_ATTEMPTS = 30
-# How long to wait for the store SPA to reflect a successful claim.
-CLAIM_CONFIRM_TIMEOUT_MS = 9000
+# How long to wait for the card to update in place before falling back to a
+# full page reload to check whether the claim actually landed.
+IN_PLACE_CONFIRM_MS = 5000
 
 
 def send_telegram_msg(message):
@@ -183,8 +184,20 @@ SCAN_JS = """
     // name rather than the button caption.
     let card = c;
     for (let hop = 0; hop < 3 && card.parentElement; hop++) card = card.parentElement;
-    let label = ((card.innerText || c.innerText || '')
-                  .replace(/\\s+/g, ' ').trim().slice(0, 90)) || ('item-' + i);
+    let label = (card.innerText || c.innerText || '');
+    // Strip volatile state (availability counts, reset timers, SOLD OUT, FREE)
+    // so one item keeps a single identity before and after it is claimed, and
+    // across a page reload.
+    label = label
+      .replace(/AVAILABLE:\\s*\\d+\\s*\\/\\s*\\d+/gi, '')
+      .replace(/RESETS?\\s+IN[^\\n]*/gi, '')
+      .replace(/\\d+\\s*D\\s*\\d+\\s*H\\s*\\d+\\s*M/gi, '')
+      .replace(/SOLD\\s*OUT/gi, '')
+      .replace(/\\bFREE\\b/gi, '')
+      .replace(/\\s+/g, ' ')
+      .trim()
+      .slice(0, 90);
+    if (!label) label = 'item-' + i;
     // Disambiguate items that share a label.
     seen[label] = (seen[label] || 0) + 1;
     const key = label + '##' + seen[label];
@@ -194,7 +207,19 @@ SCAN_JS = """
     }
 
     const btn = c.querySelector('span.primary-button');
-    const soldOut = !!c.querySelector('.item-sold-out');
+
+    // Sold-out must be VISIBLY marked. Treating a merely-present .item-sold-out
+    // node as authoritative would silently skip a genuinely free item if the
+    // store keeps a hidden placeholder in the card.
+    const soEl = c.querySelector('.item-sold-out');
+    let soldOut = false;
+    if (soEl) {
+      const r = soEl.getBoundingClientRect();
+      const s = getComputedStyle(soEl);
+      soldOut = r.width > 1 && r.height > 1 &&
+                s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
+    }
+
     const txt = btn ? (btn.innerText || '').trim().toUpperCase() : '';
     let visible = false;
     if (btn) {
@@ -343,16 +368,44 @@ def click_item(page, item):
     return False
 
 
-def wait_for_claim_confirmed(page, key, timeout_ms=CLAIM_CONFIRM_TIMEOUT_MS):
-    """Poll until THIS item stops being claimable. Per-item, not a global count."""
-    deadline = time.time() + timeout_ms / 1000.0
+def item_still_claimable(page, key):
+    items = scan_items(page)
+    match = next((x for x in items if x["key"] == key), None)
+    return match is not None and match["claimable"]
+
+
+def reload_store(page):
+    """Re-fetch the store from the server.
+
+    The SPA does not reliably re-render a card after a successful claim, so an
+    unchanged DOM does NOT mean the claim failed. A reload is the only way to
+    read authoritative state."""
+    print("[VERIFY] Reloading store to read authoritative state...")
+    try:
+        page.goto(STORE_URL, wait_until="domcontentloaded", timeout=60000)
+        wait_for_store_ready(page)
+        dismiss_cookies(page)
+        close_modals(page, context="after_reload")
+        full_scroll(page)
+        return True
+    except Exception as e:
+        print(f"[VERIFY] Reload failed: {e}")
+        return False
+
+
+def confirm_claim(page, key, state):
+    """True if the item is claimed. Fast path reads the DOM; slow path reloads."""
+    deadline = time.time() + IN_PLACE_CONFIRM_MS / 1000.0
     while time.time() < deadline:
-        items = scan_items(page)
-        match = next((x for x in items if x["key"] == key), None)
-        if match is None or not match["claimable"]:
+        if not item_still_claimable(page, key):
             return True
         page.wait_for_timeout(600)
-    return False
+
+    print("[VERIFY] Card unchanged in place — the SPA may just be stale.")
+    if not reload_store(page):
+        return False
+    state["fresh"] = True
+    return not item_still_claimable(page, key)
 
 
 def claim_rewards(page):
@@ -365,10 +418,13 @@ def claim_rewards(page):
     pending = claimable_items(items)
     # Counted up front: items already unavailable when we arrived. Counting at the
     # end would fold in everything we just claimed, which reads as a false alarm.
-    sold_out = sum(1 for it in items if it["soldOut"])
+    gone = [it for it in items if it["soldOut"]]
+    sold_out = len(gone)
     print(f"[CLAIM] Found {len(pending)} claimable, {sold_out} sold out")
     for it in pending:
-        print(f"[CLAIM]   • {it['label']} [{it['text']}]")
+        print(f"[CLAIM]   • CLAIMABLE: {it['label']} [{it['text']}]")
+    for it in gone:
+        print(f"[CLAIM]   • SOLD OUT : {it['label']}")
 
     if not pending:
         return 0, [], sold_out
@@ -376,6 +432,8 @@ def claim_rewards(page):
     attempts = {}          # key -> attempts made
     claimed = 0
     total_attempts = 0
+    # Tracks whether the DOM reflects post-click server state.
+    state = {"fresh": True}
 
     while total_attempts < MAX_TOTAL_ATTEMPTS:
         items = scan_items(page)
@@ -403,6 +461,7 @@ def claim_rewards(page):
         # Never click with a modal still up — that is how clicks got eaten before.
         close_modals(page, context=f"before_{total_attempts}")
 
+        state["fresh"] = False
         dispatched = click_item(page, target)
         if not dispatched:
             save_debug(page, f"stuck_{total_attempts}")
@@ -416,20 +475,22 @@ def claim_rewards(page):
             pass
         close_modals(page, context=f"after_{total_attempts}")
 
-        if wait_for_claim_confirmed(page, key):
+        if confirm_claim(page, key, state):
             claimed += 1
             print(f"[CLAIM]   ✅ Claimed '{target['label']}'. Total: {claimed}")
         else:
-            print(f"[CLAIM]   ⚠️ '{target['label']}' still claimable after {CLAIM_CONFIRM_TIMEOUT_MS}ms")
+            print(f"[CLAIM]   ⚠️ '{target['label']}' still claimable after a reload — genuine failure.")
             save_debug(page, f"stuck_{total_attempts}")
             save_html(page, f"stuck_{total_attempts}")
 
     if total_attempts >= MAX_TOTAL_ATTEMPTS:
         print("[CLAIM] Hit the total attempt ceiling — stopping.")
 
-    # Final state: rescan from scratch, including a fresh scroll in case new rows
-    # lazy-loaded while we were working.
-    full_scroll(page)
+    # Final tally must come from authoritative server state, never a stale SPA.
+    if not state["fresh"]:
+        reload_store(page)
+    else:
+        full_scroll(page)
     items = scan_items(page)
     remaining = [it["label"] for it in claimable_items(items)]
     save_debug(page, "06_final")
