@@ -1,7 +1,8 @@
 name: MCOC Rewards Collector
 on:
   schedule:
-    - cron: '0 4 * * *'
+    - cron: '0 8 * * *'
+      timezone: 'Asia/Jerusalem'
   workflow_dispatch:
 jobs:
   build:
