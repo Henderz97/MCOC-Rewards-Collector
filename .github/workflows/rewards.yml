@@ -4,6 +4,11 @@ on:
     - cron: '0 8 * * *'
       timezone: 'Asia/Jerusalem'
   workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mcoc-rewards
+  cancel-in-progress: false
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -11,10 +16,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           # Restores the pip wheel cache keyed on requirements.txt.
@@ -27,7 +32,7 @@ jobs:
       # pinned Playwright version doesn't change, so download it once.
       - name: Cache Playwright browser
         id: playwright-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
@@ -48,15 +53,16 @@ jobs:
           KABAM_PASSWORD: ${{ secrets.KABAM_PASSWORD }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python Collect_Rewards.py
+        run: python -u Collect_Rewards.py
 
       # Always upload — a partial claim exits non-zero now, but even on a clean
       # run the screenshots are what let us diagnose the next miss.
       - name: Upload debug pack
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: mcoc-debug-${{ github.run_number }}
           path: debug/
-          retention-days: 7
+          retention-days: 14
           if-no-files-found: ignore
+
