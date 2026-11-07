@@ -101,6 +101,7 @@ NUKE_MODAL_JS = """
 
 # Close affordances, scoped inside a modal so we never click a store item by accident.
 MODAL_CLOSE_SELECTORS = [
+    ".purchase-handler-modal button.button-continue",
     ".modal-bundle span.primary-button",
     ".purchase-handler span.primary-button",
     ".modal-backdrop span.primary-button",
@@ -230,7 +231,8 @@ SCAN_JS = """
     }
     const claimable = !!btn && visible && !soldOut &&
                       !txt.includes('LOGIN') && !txt.includes('SOLD');
-    return {id: c.dataset.collectorId, key, label, text: txt, claimable, soldOut};
+    const title = (card.querySelector('.item-title')?.textContent || '').trim();
+    return {id: c.dataset.collectorId, key, label, title, text: txt, claimable, soldOut};
   });
 }
 """
@@ -398,7 +400,19 @@ def reload_store(page):
         return False
 
 
-def confirm_claim(page, key, state):
+def success_modal_matches(page, title):
+    """Read the store's explicit confirmation before dismissing the modal."""
+    if not title:
+        return False
+    modal = page.locator('.purchase-handler-modal').first
+    if not modal.is_visible():
+        return False
+    heading = ' '.join(modal.locator('h3').inner_text().split())
+    message = ' '.join(modal.locator('p').inner_text().split())
+    return heading == 'Success' and message == 'Successfully Claimed: ' + ' '.join(title.split())
+
+
+def confirm_claim(page, key, state, modal_confirmed=False):
     """Confirm a sold-out card after reload, never from a missing DOM node."""
     if not reload_store(page):
         raise RuntimeError("Post-claim reload failed; collection status unknown")
@@ -406,6 +420,9 @@ def confirm_claim(page, key, state):
     items = scan_items(page)
     match = next((it for it in items if it['key'] == key), None)
     if match is None:
+        if modal_confirmed:
+            print('[VERIFY] Item-specific success modal confirmed; claimed card removed after reload.')
+            return True
         raise RuntimeError("Claimed card disappeared; no explicit confirmation available")
     return match['soldOut']
 
@@ -475,9 +492,10 @@ def claim_rewards(page):
             page.wait_for_selector(MODAL_SELECTOR, state="visible", timeout=4000)
         except PWTimeout:
             pass
+        modal_confirmed = success_modal_matches(page, target.get('title', ''))
         close_modals(page, context=f"after_{total_attempts}")
 
-        if confirm_claim(page, key, state):
+        if confirm_claim(page, key, state, modal_confirmed):
             claimed += 1
             print(f"[CLAIM]   ✅ Claimed '{target['label']}'. Total: {claimed}")
         else:
