@@ -237,11 +237,16 @@ SCAN_JS = """
 
 
 def scan_items(page):
-    try:
-        return page.evaluate(SCAN_JS) or []
-    except Exception as e:
-        print(f"[SCAN] Failed: {e}")
-        return []
+    # A broken selector or expired login must never become 'nothing to claim'.
+    page.wait_for_selector('.item-action-free', state='attached', timeout=20000)
+    items = page.evaluate(SCAN_JS)
+    if not items:
+        raise RuntimeError("Reward scan returned no cards; collection status unknown")
+    if any('LOGIN' in it.get('text', '').replace(' ', '').upper() for it in items):
+        raise RuntimeError("Store requires login; collection status unknown")
+    if any(not it['claimable'] and not it['soldOut'] for it in items):
+        raise RuntimeError("Reward card has an unknown state; refusing to report success")
+    return items
 
 
 def claimable_items(items):
@@ -311,7 +316,7 @@ def login(page):
     page.wait_for_selector('input[type="email"]', state="visible", timeout=20000)
     page.fill('input[type="email"]', EMAIL)
     page.fill('input[type="password"]', PASSWORD)
-    save_debug(page, "03_filled")
+    # Do not put the filled login form in downloadable debug artifacts.
 
     print("[LOGIN] Submitting...")
     try:
@@ -394,18 +399,15 @@ def reload_store(page):
 
 
 def confirm_claim(page, key, state):
-    """True if the item is claimed. Fast path reads the DOM; slow path reloads."""
-    deadline = time.time() + IN_PLACE_CONFIRM_MS / 1000.0
-    while time.time() < deadline:
-        if not item_still_claimable(page, key):
-            return True
-        page.wait_for_timeout(600)
-
-    print("[VERIFY] Card unchanged in place — the SPA may just be stale.")
+    """Confirm a sold-out card after reload, never from a missing DOM node."""
     if not reload_store(page):
-        return False
+        raise RuntimeError("Post-claim reload failed; collection status unknown")
     state["fresh"] = True
-    return not item_still_claimable(page, key)
+    items = scan_items(page)
+    match = next((it for it in items if it['key'] == key), None)
+    if match is None:
+        raise RuntimeError("Claimed card disappeared; no explicit confirmation available")
+    return match['soldOut']
 
 
 def claim_rewards(page):
@@ -488,7 +490,8 @@ def claim_rewards(page):
 
     # Final tally must come from authoritative server state, never a stale SPA.
     if not state["fresh"]:
-        reload_store(page)
+        if not reload_store(page):
+            raise RuntimeError("Final reload failed; collection status unknown")
     else:
         full_scroll(page)
     items = scan_items(page)
@@ -593,3 +596,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
