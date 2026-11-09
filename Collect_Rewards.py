@@ -400,16 +400,43 @@ def reload_store(page):
         return False
 
 
-def success_modal_matches(page, title):
-    """Read the store's explicit confirmation before dismissing the modal."""
-    if not title:
+def confirmation_matches(heading, message, title):
+    """Require the success heading and the exact reward name, ignoring layout."""
+    normalize = lambda value: ' '.join((value or '').split()).casefold()
+    if not normalize(title) or normalize(heading) != 'success':
         return False
-    modal = page.locator('.purchase-handler-modal').first
-    if not modal.is_visible():
-        return False
-    heading = ' '.join(modal.locator('h3').inner_text().split())
-    message = ' '.join(modal.locator('p').inner_text().split())
-    return heading == 'Success' and message == 'Successfully Claimed: ' + ' '.join(title.split())
+    match = re.fullmatch(r'\s*successfully\s+claimed\s*:\s*(.*?)\s*',
+                         message or '', flags=re.IGNORECASE | re.DOTALL)
+    return bool(match and normalize(match.group(1)) == normalize(title))
+
+
+def success_modal_matches(page, title, timeout_ms=8000):
+    """Wait for the item-specific receipt before closing the success popup."""
+    deadline = time.monotonic() + timeout_ms / 1000
+    receipt = None
+    while True:
+        # Read DOM text rather than innerText, which applies CSS text-transform.
+        # textContent joins text around <br>; the parser handles either layout.
+        receipt = page.evaluate("""() => {
+            for (const modal of document.querySelectorAll('.purchase-handler-modal')) {
+                const rect = modal.getBoundingClientRect();
+                const style = getComputedStyle(modal);
+                if (rect.width <= 1 || rect.height <= 1 || style.display === 'none' ||
+                    style.visibility === 'hidden' || style.opacity === '0') continue;
+                return {heading: modal.querySelector('h3')?.textContent || '',
+                        message: modal.querySelector('p')?.textContent || ''};
+            }
+            return null;
+        }""")
+        if receipt and confirmation_matches(receipt['heading'], receipt['message'], title):
+            print(f"[VERIFY] Store success receipt matched reward: {title!r}")
+            return True
+        if time.monotonic() >= deadline:
+            print(f"[VERIFY] No matching success receipt for {title!r}; observed: {receipt!r}")
+            save_debug(page, 'unmatched_confirmation')
+            save_html(page, 'unmatched_confirmation')
+            return False
+        page.wait_for_timeout(250)
 
 
 def confirm_claim(page, key, state, modal_confirmed=False):
@@ -487,11 +514,7 @@ def claim_rewards(page):
             save_html(page, f"stuck_{total_attempts}")
             continue
 
-        # Let the confirmation modal appear, then clear it.
-        try:
-            page.wait_for_selector(MODAL_SELECTOR, state="visible", timeout=4000)
-        except PWTimeout:
-            pass
+        # Wait for the receipt content, not merely an empty modal/backdrop.
         modal_confirmed = success_modal_matches(page, target.get('title', ''))
         close_modals(page, context=f"after_{total_attempts}")
 
